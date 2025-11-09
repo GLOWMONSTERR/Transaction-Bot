@@ -39,6 +39,7 @@ class LeagueBot(commands.Bot):
 
         if self.config.guild_id:
             guild = discord.Object(id=self.config.guild_id)
+            self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
             log.info("Synced commands to guild %s", self.config.guild_id)
         else:
@@ -49,11 +50,10 @@ class LeagueBot(commands.Bot):
         log.info("Logged in as %s", self.user)
 
 
-class LeagueCommands(commands.GroupCog, group_name=None):
+class LeagueCommands(commands.Cog):
     """Slash-command collection that powers the league management workflow."""
 
     def __init__(self, bot: LeagueBot) -> None:
-        super().__init__()
         self.bot = bot
 
     # ------------------------------------------------------------------
