@@ -102,10 +102,17 @@ class LeagueCommands(commands.Cog):
         member_role = self._get_role(guild, self.bot.config.team_member_role_id)
 
         icon_url = None
+        creation_notes: List[str] = []
         if profile_picture:
             icon_bytes = await profile_picture.read()
-            await role.edit(display_icon=icon_bytes)
-            icon_url = profile_picture.url
+            try:
+                await role.edit(display_icon=icon_bytes)
+                icon_url = profile_picture.url
+            except discord.Forbidden:
+                log.warning("Server does not support role icons; skipping team icon upload.")
+                creation_notes.append(
+                    "Role icons require a Level 2 boosted server. The team was created without an icon."
+                )
 
         try:
             team = self.bot.team_manager.create_team(
@@ -127,7 +134,10 @@ class LeagueCommands(commands.Cog):
         if member_role:
             await team_captain.add_roles(member_role, reason="Joined team roster")
 
-        await interaction.response.send_message(f"Team {team.name} created successfully!", ephemeral=True)
+        message = f"Team {team.name} created successfully!"
+        if creation_notes:
+            message = "\n".join([message, *creation_notes])
+        await interaction.response.send_message(message, ephemeral=True)
 
     # ------------------------------------------------------------------
     @app_commands.command(name="manage-team", description="Manage your team roster")
