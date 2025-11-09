@@ -120,6 +120,7 @@ class ManageTeamView(discord.ui.View):
         roster_locked: bool,
         captain_role: Optional[discord.Role] = None,
         co_captain_role: Optional[discord.Role] = None,
+        member_role: Optional[discord.Role] = None,
     ) -> None:
         super().__init__(timeout=300)
         self.interaction = interaction
@@ -129,6 +130,7 @@ class ManageTeamView(discord.ui.View):
         self.roster_locked = roster_locked
         self.captain_role = captain_role
         self.co_captain_role = co_captain_role
+        self.member_role = member_role
         self.selected_member: Optional[int] = None
 
         self.member_select = MemberSelect(team=team, guild=interaction.guild, on_select=self._select_member)
@@ -254,6 +256,11 @@ class ManageTeamView(discord.ui.View):
                     member = await self._ensure_member(member_id)
                     if member:
                         await member.remove_roles(self.co_captain_role, reason="Team disbanded")
+            if self.member_role:
+                for member_id in list(self.team.members):
+                    member = await self._ensure_member(member_id)
+                    if member:
+                        await member.remove_roles(self.member_role, reason="Team disbanded")
             self.manager.delete_team(self.team.name)
             await self.interaction.edit_original_response(content="Team disbanded.", embed=None, view=None)
 
@@ -285,6 +292,8 @@ class ManageTeamView(discord.ui.View):
                 old_captain = await self._ensure_member(old_captain_id)
                 if old_captain:
                     await old_captain.remove_roles(self.captain_role, reason="Captaincy transferred")
+            if self.member_role:
+                await member.add_roles(self.member_role, reason="Joined team roster")
             await select_interaction.response.send_message(f"Transferred captaincy to {member.mention}.", ephemeral=True)
             await self._refresh_message()
 
@@ -311,6 +320,8 @@ class ManageTeamView(discord.ui.View):
                 await member.remove_roles(role, reason="Removed from team")
             if self.co_captain_role and was_co_captain:
                 await member.remove_roles(self.co_captain_role, reason="Removed as co-captain")
+            if self.member_role:
+                await member.remove_roles(self.member_role, reason="Removed from team")
         await interaction.response.send_message("Member removed from the roster.", ephemeral=True)
         self.selected_member = None
         self.kick_button.disabled = True
@@ -336,12 +347,20 @@ class ManageTeamView(discord.ui.View):
 class InviteNavigationView(discord.ui.View):
     """View that lets a user accept or decline team invites."""
 
-    def __init__(self, *, interaction: discord.Interaction, teams: List[Team], manager: TeamManager) -> None:
+    def __init__(
+        self,
+        *,
+        interaction: discord.Interaction,
+        teams: List[Team],
+        manager: TeamManager,
+        member_role: Optional[discord.Role] = None,
+    ) -> None:
         super().__init__(timeout=300)
         self.interaction = interaction
         self.teams = teams
         self.manager = manager
         self.index = 0
+        self.member_role = member_role
 
         self.prev_button = discord.ui.Button(label="Prev", style=discord.ButtonStyle.secondary)
         self.prev_button.callback = self._prev  # type: ignore[assignment]
@@ -384,6 +403,8 @@ class InviteNavigationView(discord.ui.View):
         role = interaction.guild.get_role(team.role_id)
         if role:
             await member.add_roles(role, reason="Accepted team invite")
+        if self.member_role:
+            await member.add_roles(self.member_role, reason="Joined team roster")
         self.manager.add_member(team, member.id)
         await interaction.response.send_message(f"You have joined {team.name}.", ephemeral=True)
         self.teams.remove(team)

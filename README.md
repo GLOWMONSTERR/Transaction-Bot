@@ -81,6 +81,7 @@ The checklist below walks through everything from installing VS Code to seeing t
      - `DISCORD_TOKEN`: the bot token from the Developer Portal.
      - `GUILD_ID` (optional): a single server ID for faster command sync during development.
      - `CAPTAIN_ROLE_ID` / `CO_CAPTAIN_ROLE_ID` (optional): global role IDs if you use shared captain roles.
+     - `TEAM_MEMBER_ROLE_ID` (optional): a general member role that everyone on a team should receive.
 
 6. **Run and debug the bot**
    - Press **F5** or use **Run > Start Debugging**. When VS Code asks how to run it, pick **Python File**.

@@ -90,6 +90,7 @@ class LeagueBot(commands.Bot):
         guild = interaction.guild
         colour = discord.Colour(int(hex_code, 16))
         role = await guild.create_role(name=team_name, colour=colour, reason="New league team")
+        member_role = self._get_role(guild, self.config.team_member_role_id)
 
         icon_url = None
         if profile_picture:
@@ -114,6 +115,8 @@ class LeagueBot(commands.Bot):
         captain_role = self._get_role(guild, self.config.captain_role_id)
         if captain_role:
             await team_captain.add_roles(captain_role, reason="Granted global captain role")
+        if member_role:
+            await team_captain.add_roles(member_role, reason="Joined team roster")
 
         await interaction.response.send_message(f"Team {team.name} created successfully!", ephemeral=True)
 
@@ -139,6 +142,7 @@ class LeagueBot(commands.Bot):
             roster_locked=self.team_manager.roster_locked,
             captain_role=self._get_role(interaction.guild, self.config.captain_role_id),
             co_captain_role=self._get_role(interaction.guild, self.config.co_captain_role_id),
+            member_role=self._get_role(interaction.guild, self.config.team_member_role_id),
         )
         await interaction.response.send_message(embed=build_team_embed(team, interaction.guild), view=view, ephemeral=True)
 
@@ -150,7 +154,12 @@ class LeagueBot(commands.Bot):
             await interaction.response.send_message("You have no pending invites.", ephemeral=True)
             return
 
-        view = InviteNavigationView(interaction=interaction, teams=invites, manager=self.team_manager)
+        view = InviteNavigationView(
+            interaction=interaction,
+            teams=invites,
+            manager=self.team_manager,
+            member_role=self._get_role(interaction.guild, self.config.team_member_role_id),
+        )
         await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     # ------------------------------------------------------------------
@@ -189,6 +198,9 @@ class LeagueBot(commands.Bot):
         co_captain_role = self._get_role(interaction.guild, self.config.co_captain_role_id)
         if co_captain_role:
             await interaction.user.remove_roles(co_captain_role, reason="Left team")
+        member_role = self._get_role(interaction.guild, self.config.team_member_role_id)
+        if member_role:
+            await interaction.user.remove_roles(member_role, reason="Left team")
         await interaction.followup.send(f"You have left {team.name}.", ephemeral=True)
 
     # ------------------------------------------------------------------
@@ -246,6 +258,7 @@ class LeagueBot(commands.Bot):
             old_captain_id = team.captain_id
             self.team_manager.set_captain(team, new_captain.id)
             captain_role = self._get_role(interaction.guild, self.config.captain_role_id)
+            member_role = self._get_role(interaction.guild, self.config.team_member_role_id)
             old_member = interaction.guild.get_member(old_captain_id)
             if old_member and captain_role:
                 await old_member.remove_roles(captain_role, reason="Captaincy transferred")
@@ -253,6 +266,8 @@ class LeagueBot(commands.Bot):
                 await new_captain.add_roles(captain_role, reason="Captaincy granted")
             if role:
                 await new_captain.add_roles(role, reason="Captaincy granted")
+            if member_role:
+                await new_captain.add_roles(member_role, reason="Joined team roster")
 
         await interaction.response.send_message("Team updated successfully.", ephemeral=True)
 
@@ -277,6 +292,7 @@ class LeagueBot(commands.Bot):
             roster_locked=self.team_manager.roster_locked,
             captain_role=self._get_role(interaction.guild, self.config.captain_role_id),
             co_captain_role=self._get_role(interaction.guild, self.config.co_captain_role_id),
+            member_role=self._get_role(interaction.guild, self.config.team_member_role_id),
         )
         await interaction.response.send_message(embed=build_team_embed(team, interaction.guild), view=view, ephemeral=True)
 
