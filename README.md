@@ -64,6 +64,7 @@ The checklist below walks through everything from installing VS Code to seeing t
      - **macOS/Linux**: `python3 -m venv .venv`
    - Activate the environment so VS Code uses it:
      - **Windows PowerShell**: `.venv\Scripts\Activate.ps1`
+       - If PowerShell shows a *“running scripts is disabled on this system”* error, temporarily allow the activation script by running `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass` in the same PowerShell window, then repeat the activate command. The change only lasts for that one terminal session.
      - **Windows Command Prompt**: `.venv\Scripts\activate.bat`
      - **macOS/Linux**: `source .venv/bin/activate`
    - The terminal prompt should now start with `(.venv)`—that means you’re inside the virtual environment.
@@ -73,6 +74,7 @@ The checklist below walks through everything from installing VS Code to seeing t
      ```bash
      pip install -r requirements.txt
      ```
+     - If PowerShell reports that `pip` is not recognized, run `py -m pip install -r requirements.txt` instead. This uses the copy of `pip` bundled with Python even when the global `pip` command is unavailable.
    - VS Code might pop up a toast suggesting you select the interpreter from `.venv`. Click **Select** if you see it. If not, click the Python version shown in the status bar and choose the one inside `.venv` manually.
 
 5. **Configure your `.env` file**
