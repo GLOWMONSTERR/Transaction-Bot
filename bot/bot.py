@@ -30,14 +30,15 @@ class LeagueBot(commands.Bot):
     def __init__(self, *, config: BotConfig, data_path: Path) -> None:
         intents = discord.Intents.default()
         intents.members = True
-        super().__init__(command_prefix="!", intents=intents)
+        super().__init__(command_prefix=commands.when_mentioned, intents=intents, help_command=None)
         self.config = config
         self.team_manager = TeamManager(data_path)
 
     async def setup_hook(self) -> None:
+        await self.add_cog(LeagueCommands(self))
+
         if self.config.guild_id:
             guild = discord.Object(id=self.config.guild_id)
-            self.tree.copy_global_to(guild=guild)
             await self.tree.sync(guild=guild)
             log.info("Synced commands to guild %s", self.config.guild_id)
         else:
@@ -46,6 +47,14 @@ class LeagueBot(commands.Bot):
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s", self.user)
+
+
+class LeagueCommands(commands.GroupCog, group_name=None):
+    """Slash-command collection that powers the league management workflow."""
+
+    def __init__(self, bot: LeagueBot) -> None:
+        super().__init__()
+        self.bot = bot
 
     # ------------------------------------------------------------------
     # Helpers
@@ -90,7 +99,7 @@ class LeagueBot(commands.Bot):
         guild = interaction.guild
         colour = discord.Colour(int(hex_code, 16))
         role = await guild.create_role(name=team_name, colour=colour, reason="New league team")
-        member_role = self._get_role(guild, self.config.team_member_role_id)
+        member_role = self._get_role(guild, self.bot.config.team_member_role_id)
 
         icon_url = None
         if profile_picture:
@@ -99,7 +108,7 @@ class LeagueBot(commands.Bot):
             icon_url = profile_picture.url
 
         try:
-            team = self.team_manager.create_team(
+            team = self.bot.team_manager.create_team(
                 name=team_name,
                 hex_color=f"#{hex_code}",
                 role_id=role.id,
@@ -112,7 +121,7 @@ class LeagueBot(commands.Bot):
             return
 
         await team_captain.add_roles(role, reason="Team captain assigned")
-        captain_role = self._get_role(guild, self.config.captain_role_id)
+        captain_role = self._get_role(guild, self.bot.config.captain_role_id)
         if captain_role:
             await team_captain.add_roles(captain_role, reason="Granted global captain role")
         if member_role:
@@ -123,7 +132,7 @@ class LeagueBot(commands.Bot):
     # ------------------------------------------------------------------
     @app_commands.command(name="manage-team", description="Manage your team roster")
     async def manage_team(self, interaction: discord.Interaction) -> None:
-        team = self.team_manager.find_team_for_member(interaction.user.id)
+        team = self.bot.team_manager.find_team_for_member(interaction.user.id)
         if not team:
             await interaction.response.send_message("You are not a member of any team.", ephemeral=True)
             return
@@ -137,19 +146,23 @@ class LeagueBot(commands.Bot):
         view = ManageTeamView(
             interaction=interaction,
             team=team,
-            manager=self.team_manager,
+            manager=self.bot.team_manager,
             is_admin=interaction.user.guild_permissions.administrator,
-            roster_locked=self.team_manager.roster_locked,
-            captain_role=self._get_role(interaction.guild, self.config.captain_role_id),
-            co_captain_role=self._get_role(interaction.guild, self.config.co_captain_role_id),
-            member_role=self._get_role(interaction.guild, self.config.team_member_role_id),
+            roster_locked=self.bot.team_manager.roster_locked,
+            captain_role=self._get_role(interaction.guild, self.bot.config.captain_role_id),
+            co_captain_role=self._get_role(interaction.guild, self.bot.config.co_captain_role_id),
+            member_role=self._get_role(interaction.guild, self.bot.config.team_member_role_id),
         )
-        await interaction.response.send_message(embed=build_team_embed(team, interaction.guild), view=view, ephemeral=True)
+        await interaction.response.send_message(
+            embed=build_team_embed(team, interaction.guild),
+            view=view,
+            ephemeral=True,
+        )
 
     # ------------------------------------------------------------------
     @app_commands.command(name="check-invites", description="View your pending team invites")
     async def check_invites(self, interaction: discord.Interaction) -> None:
-        invites = self.team_manager.invites_for_user(interaction.user.id)
+        invites = self.bot.team_manager.invites_for_user(interaction.user.id)
         if not invites:
             await interaction.response.send_message("You have no pending invites.", ephemeral=True)
             return
@@ -157,15 +170,15 @@ class LeagueBot(commands.Bot):
         view = InviteNavigationView(
             interaction=interaction,
             teams=invites,
-            manager=self.team_manager,
-            member_role=self._get_role(interaction.guild, self.config.team_member_role_id),
+            manager=self.bot.team_manager,
+            member_role=self._get_role(interaction.guild, self.bot.config.team_member_role_id),
         )
         await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     # ------------------------------------------------------------------
     @app_commands.command(name="roster", description="Browse rosters for any team")
     async def roster(self, interaction: discord.Interaction) -> None:
-        teams = sorted(self.team_manager.all_teams(), key=lambda team: team.name.lower())
+        teams = sorted(self.bot.team_manager.all_teams(), key=lambda team: team.name.lower())
         if not teams:
             await interaction.response.send_message("No teams have been created yet.", ephemeral=True)
             return
@@ -179,7 +192,7 @@ class LeagueBot(commands.Bot):
     # ------------------------------------------------------------------
     @app_commands.command(name="leave", description="Leave your current team")
     async def leave_team(self, interaction: discord.Interaction) -> None:
-        team = self.team_manager.find_team_for_member(interaction.user.id)
+        team = self.bot.team_manager.find_team_for_member(interaction.user.id)
         if not team:
             await interaction.response.send_message("You are not on a roster.", ephemeral=True)
             return
@@ -191,22 +204,22 @@ class LeagueBot(commands.Bot):
         if not confirmed:
             return
 
-        self.team_manager.remove_member(team, interaction.user.id)
+        self.bot.team_manager.remove_member(team, interaction.user.id)
         role = interaction.guild.get_role(team.role_id)
         if role:
             await interaction.user.remove_roles(role, reason="Left team")
-        co_captain_role = self._get_role(interaction.guild, self.config.co_captain_role_id)
+        co_captain_role = self._get_role(interaction.guild, self.bot.config.co_captain_role_id)
         if co_captain_role:
             await interaction.user.remove_roles(co_captain_role, reason="Left team")
-        member_role = self._get_role(interaction.guild, self.config.team_member_role_id)
+        member_role = self._get_role(interaction.guild, self.bot.config.team_member_role_id)
         if member_role:
             await interaction.user.remove_roles(member_role, reason="Left team")
         await interaction.followup.send(f"You have left {team.name}.", ephemeral=True)
 
     # ------------------------------------------------------------------
     async def _team_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
-        choices = []
-        for team in self.team_manager.all_teams():
+        choices: List[app_commands.Choice[str]] = []
+        for team in self.bot.team_manager.all_teams():
             if current.lower() in team.name.lower():
                 choices.append(app_commands.Choice(name=team.name, value=team.name))
         return choices[:25]
@@ -233,7 +246,7 @@ class LeagueBot(commands.Bot):
             await interaction.response.send_message("Administrator permissions are required.", ephemeral=True)
             return
 
-        team = self.team_manager.get_team(team_name)
+        team = self.bot.team_manager.get_team(team_name)
         if not team:
             await interaction.response.send_message("Team not found.", ephemeral=True)
             return
@@ -242,23 +255,23 @@ class LeagueBot(commands.Bot):
         if new_name:
             if role:
                 await role.edit(name=new_name)
-            self.team_manager.rename(team, new_name)
+            self.bot.team_manager.rename(team, new_name)
         if new_hex:
             hex_value = new_hex.strip().lstrip("#")
             colour = discord.Colour(int(hex_value, 16))
             if role:
                 await role.edit(colour=colour)
-            self.team_manager.set_hex(team, f"#{hex_value}")
+            self.bot.team_manager.set_hex(team, f"#{hex_value}")
         if new_logo:
             icon_bytes = await new_logo.read()
             if role:
                 await role.edit(display_icon=icon_bytes)
-            self.team_manager.set_icon_url(team, new_logo.url)
+            self.bot.team_manager.set_icon_url(team, new_logo.url)
         if new_captain:
             old_captain_id = team.captain_id
-            self.team_manager.set_captain(team, new_captain.id)
-            captain_role = self._get_role(interaction.guild, self.config.captain_role_id)
-            member_role = self._get_role(interaction.guild, self.config.team_member_role_id)
+            self.bot.team_manager.set_captain(team, new_captain.id)
+            captain_role = self._get_role(interaction.guild, self.bot.config.captain_role_id)
+            member_role = self._get_role(interaction.guild, self.bot.config.team_member_role_id)
             old_member = interaction.guild.get_member(old_captain_id)
             if old_member and captain_role:
                 await old_member.remove_roles(captain_role, reason="Captaincy transferred")
@@ -279,7 +292,7 @@ class LeagueBot(commands.Bot):
             await interaction.response.send_message("Administrator permissions are required.", ephemeral=True)
             return
 
-        team = self.team_manager.get_team(team_name)
+        team = self.bot.team_manager.get_team(team_name)
         if not team:
             await interaction.response.send_message("Team not found.", ephemeral=True)
             return
@@ -287,14 +300,18 @@ class LeagueBot(commands.Bot):
         view = ManageTeamView(
             interaction=interaction,
             team=team,
-            manager=self.team_manager,
+            manager=self.bot.team_manager,
             is_admin=True,
-            roster_locked=self.team_manager.roster_locked,
-            captain_role=self._get_role(interaction.guild, self.config.captain_role_id),
-            co_captain_role=self._get_role(interaction.guild, self.config.co_captain_role_id),
-            member_role=self._get_role(interaction.guild, self.config.team_member_role_id),
+            roster_locked=self.bot.team_manager.roster_locked,
+            captain_role=self._get_role(interaction.guild, self.bot.config.captain_role_id),
+            co_captain_role=self._get_role(interaction.guild, self.bot.config.co_captain_role_id),
+            member_role=self._get_role(interaction.guild, self.bot.config.team_member_role_id),
         )
-        await interaction.response.send_message(embed=build_team_embed(team, interaction.guild), view=view, ephemeral=True)
+        await interaction.response.send_message(
+            embed=build_team_embed(team, interaction.guild),
+            view=view,
+            ephemeral=True,
+        )
 
     # ------------------------------------------------------------------
     @app_commands.command(name="admin-lock", description="Admin: toggle roster lock")
@@ -303,8 +320,8 @@ class LeagueBot(commands.Bot):
             await interaction.response.send_message("Administrator permissions are required.", ephemeral=True)
             return
 
-        locked = not self.team_manager.roster_locked
-        self.team_manager.set_roster_locked(locked)
+        locked = not self.bot.team_manager.roster_locked
+        self.bot.team_manager.set_roster_locked(locked)
         state = "locked" if locked else "unlocked"
         await interaction.response.send_message(f"Rosters are now {state}.", ephemeral=True)
 

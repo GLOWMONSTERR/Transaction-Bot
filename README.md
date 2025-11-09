@@ -98,6 +98,11 @@ The checklist below walks through everything from installing VS Code to seeing t
 
 Once the bot is online, it will automatically register slash commands (instantly if `GUILD_ID` is set). Team and invite data are saved in `data/teams.json`, so you can stop and restart the bot without losing progress.
 
+### Troubleshooting command sync and intents
+
+- **Slash commands are missing in Discord**: Double-check that you invited the bot with both the `bot` and `applications.commands` scopes selected in the OAuth URL generator. If you forgot to include `applications.commands`, regenerate the link, remove the bot from the server, and invite it again. Also make sure the `GUILD_ID` in `.env` matches the server you are testing in—otherwise the commands may take up to an hour to appear globally.
+- **“Privileged message content intent is missing” warning**: The bot only uses slash commands, so the warning is harmless. If you want to silence it, open your application in the Developer Portal, go to **Bot > Privileged Gateway Intents**, and toggle **Message Content Intent** on. Restart the bot after saving.
+
 ## Command summary
 
 | Command | Who can use it | Description |
