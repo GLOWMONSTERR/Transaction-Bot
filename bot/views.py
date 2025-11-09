@@ -116,14 +116,35 @@ class InviteUserSelect(discord.ui.UserSelect):
         self._on_select = callback
 
     async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
-        selected = self.values[0]
-        if isinstance(selected, discord.Member):
-            member = selected
-        elif isinstance(selected, discord.User):
-            member = interaction.guild.get_member(selected.id)
-        else:
-            member_id = int(selected)
-            member = interaction.guild.get_member(member_id)
+        guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("This can only be used inside a server.", ephemeral=True)
+            return
+
+        member: Optional[discord.Member] = None
+
+        if self.selected_users:
+            candidate = self.selected_users[0]
+            if isinstance(candidate, discord.Member):
+                member = candidate
+            else:
+                member = guild.get_member(candidate.id)
+
+        if member is None:
+            selected = self.values[0]
+            if isinstance(selected, discord.Member):
+                member = selected
+            elif isinstance(selected, discord.User):
+                member = guild.get_member(selected.id)
+            elif hasattr(selected, "id"):
+                member = guild.get_member(int(getattr(selected, "id")))
+            else:
+                try:
+                    member_id = int(selected)
+                except (TypeError, ValueError):
+                    member_id = None
+                if member_id is not None:
+                    member = guild.get_member(member_id)
         if not member:
             await interaction.response.send_message("Member is not in this guild.", ephemeral=True)
             return

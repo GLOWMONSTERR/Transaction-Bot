@@ -6,7 +6,7 @@ A Discord bot built with [`discord.py`](https://discordpy.readthedocs.io/en/stab
 
 - `/create-team` automatically creates a coloured role, assigns a captain, and stores metadata in `data/teams.json`.
 - `/manage-team` gives captains and co-captains a management dashboard with invite, kick, promote, disband, and transfer controls, sending direct-message invites that players can accept or decline instantly.
-- Optional transaction feed posts clean embeds whenever teams are created, captains change, players join/leave, or other roster actions occur.
+- Optional transaction feed posts simple text updates whenever teams are created, captains change, players join/leave, or other roster actions occur.
 - `/leave` lets non-captain members leave their team after confirmation.
 - `/admin-edit`, `/admin-manage`, and `/admin-lock` offer complete administrative control, including roster locks and manual overrides.
 
@@ -127,7 +127,7 @@ Once the bot is online, it will automatically register slash commands (instantly
 
 ### Transaction feed
 
-If you set `TRANSACTIONS_CHANNEL_ID`, the bot posts a tidy embed whenever someone creates or disbands a team, joins or leaves a roster, promotes/demotes a co-captain, or transfers captaincy. This makes it easy for league staff (and spectators) to follow roster changes without opening the management UI.
+If you set `TRANSACTIONS_CHANNEL_ID`, the bot posts a short plain-text message (for example, `📝 **Invite Sent**` followed by the details) whenever someone creates or disbands a team, joins or leaves a roster, promotes/demotes a co-captain, or transfers captaincy. This keeps the channel clean and easy to skim—no embeds or fancy formatting, just the essentials.
 
 ## Data storage
 
@@ -136,3 +136,94 @@ The bot persists its state in `data/teams.json`. You can back up or edit this fi
 ## Contributing
 
 Pull requests are welcome! Please format code with the default `black` settings and ensure new features include documentation updates in this README.
+
+## Free hosting on Oracle Cloud (beginner friendly)
+
+You can run the bot 24/7 without paying by using Oracle Cloud Infrastructure's **Always Free** tier. The checklist below assumes you have never touched Oracle before and walks you through spinning up an Ubuntu server and keeping the bot online.
+
+1. **Create (or sign in to) an Oracle Cloud account**
+   - Go to [cloud.oracle.com/free](https://www.oracle.com/cloud/free/) and create an account.
+   - During sign-up Oracle asks for credit-card details for verification, but the Always Free resources will not charge you.
+   - After the account is activated, sign in to the [Oracle Cloud Console](https://cloud.oracle.com/). The first login can take a minute while the tenancy is provisioned.
+
+2. **Launch an Always Free compute instance**
+   - In the console search bar, type **"Compute Instances"** and open it.
+   - Click **Create instance**.
+   - Give it a name like `transaction-bot` and ensure the **Compartment** is your root compartment.
+   - Under **Image and shape**, pick **Canonical Ubuntu 22.04** (or any Ubuntu LTS) and click **Change shape**. Select an **Always Free eligible** shape, such as `VM.Standard.A1.Flex` with 1 OCPU and 1 GB of RAM.
+   - Leave networking on the default VCN/subnet. Make sure **Assign a public IPv4 address** stays checked so you can SSH in.
+   - In the **Add SSH keys** section, choose **Generate SSH key pair** and download both the private and public key files. Oracle shows their paths after creation; you'll use the `.key` file in the next step.
+   - Click **Create** and wait for the instance state to switch to *Running*.
+
+3. **Connect to the VM**
+   - Note the instance's public IP address from the instance details page.
+   - On Windows, install [Git for Windows](https://gitforwindows.org/) or [PuTTY](https://www.putty.org/) if you do not already have an SSH client.
+     - **Git Bash / macOS / Linux**: open a terminal and run `chmod 600 path/to/private.key`, then connect with:
+       ```bash
+       ssh -i path/to/private.key ubuntu@YOUR_PUBLIC_IP
+       ```
+     - **PuTTY**: convert the downloaded private key to PuTTY's `.ppk` format using *PuTTYgen*, then connect to `ubuntu@YOUR_PUBLIC_IP`.
+   - The default user for Ubuntu images is `ubuntu`. Accept the fingerprint prompt on the first connection.
+
+4. **Install system packages and Python**
+   - Update packages:
+     ```bash
+     sudo apt update && sudo apt upgrade -y
+     ```
+   - Install Git, Python, and virtualenv tools:
+     ```bash
+     sudo apt install -y git python3 python3-venv python3-pip
+     ```
+
+5. **Deploy the bot code**
+   - Clone the repository and enter it:
+     ```bash
+     git clone https://github.com/YOUR_USERNAME/Transaction-Bot.git
+     cd Transaction-Bot
+     ```
+     Replace the URL if you forked or host it elsewhere.
+   - Create and activate a virtual environment:
+     ```bash
+     python3 -m venv .venv
+     source .venv/bin/activate
+     ```
+   - Install requirements:
+     ```bash
+     pip install -r requirements.txt
+     ```
+   - Copy the environment template and edit it:
+     ```bash
+     cp .env.example .env
+     nano .env
+     ```
+     Paste your Discord token, guild ID, role IDs, and (optionally) the transactions channel ID. Press `Ctrl+O` then `Ctrl+X` to save in Nano.
+
+6. **Test the bot manually**
+   - Still inside the virtual environment, run:
+     ```bash
+     python -m bot.bot
+     ```
+   - Confirm the bot logs in and your slash commands appear. Stop it with `Ctrl+C` after verifying everything works.
+
+7. **Keep the bot running after you disconnect**
+   - The quickest approach is to use [`tmux`](https://github.com/tmux/tmux/wiki) or [`screen`](https://www.gnu.org/software/screen/). Install tmux and start a session:
+     ```bash
+     sudo apt install -y tmux
+     tmux new -s bot
+     ```
+   - Activate the virtual environment inside tmux and start the bot again:
+     ```bash
+     cd ~/Transaction-Bot
+     source .venv/bin/activate
+     python -m bot.bot
+     ```
+   - Detach from tmux with `Ctrl+B` then `D`. The bot keeps running even if you close the SSH window. Reattach later with `tmux attach -t bot`.
+
+   > **Want a more permanent setup?** Create a simple `systemd` service that launches the bot on boot. Oracle's docs cover enabling custom services, but tmux is perfectly fine for Always Free instances.
+
+8. **Secure your instance**
+   - Keep the system updated (`sudo apt update && sudo apt upgrade -y` weekly).
+   - Rotate your Discord token if it ever leaks—update `.env` and restart the bot.
+   - Store a backup of `data/teams.json` periodically (`scp ubuntu@YOUR_PUBLIC_IP:~/Transaction-Bot/data/teams.json ./backup.json`).
+
+Whenever you need to deploy updates, SSH back in, `cd` into the repo, pull the latest changes (`git pull`), reactivate `.venv`, and restart the bot inside your tmux session.

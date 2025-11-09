@@ -78,16 +78,13 @@ class LeagueBot(commands.Bot):
             log.warning("Configured transactions channel %s is not a text-capable channel", channel_id)
             return
 
-        embed = discord.Embed(
-            title=f"{emoji} {title}",
-            description=description,
-            colour=colour or discord.Colour.blurple(),
-        )
+        lines = [f"{emoji} **{title}**", description]
         if thumbnail:
-            embed.set_thumbnail(url=thumbnail)
+            lines.append(thumbnail)
+        content = "\n".join(lines)
 
         try:
-            await target.send(embed=embed)
+            await target.send(content)
         except discord.HTTPException as exc:
             log.warning("Failed to post event log message: %s", exc)
 
