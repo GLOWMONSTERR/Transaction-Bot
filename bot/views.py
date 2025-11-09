@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Awaitable, Callable, List, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, List, Optional
 
 import discord
 
 from .team_manager import Team, TeamManager
+
+if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
+    from .bot import LeagueBot
 
 
 def _hex_to_colour(hex_code: str) -> discord.Colour:
@@ -113,13 +116,128 @@ class InviteUserSelect(discord.ui.UserSelect):
         self._on_select = callback
 
     async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
-        member_id = int(self.values[0])
-        member = interaction.guild.get_member(member_id)
+        selected = self.values[0]
+        if isinstance(selected, discord.Member):
+            member = selected
+        elif isinstance(selected, discord.User):
+            member = interaction.guild.get_member(selected.id)
+        else:
+            member_id = int(selected)
+            member = interaction.guild.get_member(member_id)
         if not member:
             await interaction.response.send_message("Member is not in this guild.", ephemeral=True)
             return
         await self._on_select(interaction, member)
 
+
+class InviteDecisionView(discord.ui.View):
+    """DM view that lets a player accept or decline a roster invite."""
+
+    def __init__(
+        self,
+        *,
+        bot: "LeagueBot",
+        manager: TeamManager,
+        guild: discord.Guild,
+        team_role_id: int,
+        team_name: str,
+        team_icon_url: Optional[str],
+        member_role_id: Optional[int],
+    ) -> None:
+        super().__init__(timeout=7 * 24 * 60 * 60)  # one week
+        self.bot = bot
+        self.manager = manager
+        self.guild = guild
+        self.team_role_id = team_role_id
+        self.team_name = team_name
+        self.team_icon_url = team_icon_url
+        self.member_role_id = member_role_id
+
+    def _get_team(self) -> Optional[Team]:
+        team = self.manager.get_team_by_role(self.team_role_id)
+        if team:
+            return team
+        return self.manager.get_team(self.team_name)
+
+    def _team_icon(self, team: Team) -> Optional[str]:
+        role = self.guild.get_role(team.role_id)
+        if role and role.display_icon:
+            return role.display_icon.url
+        return team.icon_url or self.team_icon_url
+
+    async def _resolve_member(self, user_id: int) -> Optional[discord.Member]:
+        member = self.guild.get_member(user_id)
+        if member:
+            return member
+        try:
+            return await self.guild.fetch_member(user_id)
+        except discord.HTTPException:
+            return None
+
+    def _disable(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    async def _finalise(self, interaction: discord.Interaction, message: str) -> None:
+        await interaction.response.send_message(message)
+        self._disable()
+        if interaction.message:
+            try:
+                await interaction.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+        self.stop()
+
+    @discord.ui.button(label="Accept", style=discord.ButtonStyle.success)
+    async def accept(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        team = self._get_team()
+        if not team:
+            await self._finalise(interaction, "That team no longer exists.")
+            return
+
+        member = await self._resolve_member(interaction.user.id)
+        if not member:
+            await self._finalise(interaction, "You need to be in the server to accept this invite.")
+            return
+
+        if member.id in team.members:
+            self.manager.remove_invite(team, member.id)
+            await self._finalise(interaction, "You're already on that roster.")
+            return
+
+        notes: List[str] = []
+        team_role = self.guild.get_role(team.role_id)
+        message = await _safe_add_role(member, team_role, reason="Accepted team invite")
+        if message:
+            notes.append(message)
+        member_role = self.guild.get_role(self.member_role_id) if self.member_role_id else None
+        message = await _safe_add_role(member, member_role, reason="Joined team roster")
+        if message:
+            notes.append(message)
+
+        self.manager.add_member(team, member.id)
+
+        response_lines = [f"You joined {team.name}!"]
+        if notes:
+            response_lines.extend(notes)
+        await self._finalise(interaction, "\n".join(response_lines))
+
+        icon_url = self._team_icon(team)
+        await self.bot.log_event(
+            self.guild,
+            title="Player Joined",
+            description=f"{member.mention} joined **{team.name}**.",
+            colour=_hex_to_colour(team.hex_color),
+            thumbnail=icon_url,
+            emoji="✅",
+        )
+
+    @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
+    async def decline(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        team = self._get_team()
+        if team:
+            self.manager.remove_invite(team, interaction.user.id)
+        await self._finalise(interaction, f"Declined the invite to {self.team_name}.")
 
 class MemberSelect(discord.ui.Select):
     """Select component for choosing a team member."""
@@ -152,6 +270,7 @@ class ManageTeamView(discord.ui.View):
         interaction: discord.Interaction,
         team: Team,
         manager: TeamManager,
+        bot: "LeagueBot",
         is_admin: bool,
         roster_locked: bool,
         captain_role: Optional[discord.Role] = None,
@@ -162,14 +281,16 @@ class ManageTeamView(discord.ui.View):
         self.interaction = interaction
         self.team = team
         self.manager = manager
+        self.bot = bot
         self.is_admin = is_admin
         self.roster_locked = roster_locked
         self.captain_role = captain_role
         self.co_captain_role = co_captain_role
         self.member_role = member_role
         self.selected_member: Optional[int] = None
+        self.guild = interaction.guild
 
-        self.member_select = MemberSelect(team=team, guild=interaction.guild, on_select=self._select_member)
+        self.member_select = MemberSelect(team=team, guild=self.guild, on_select=self._select_member)
         if self.member_select.options:
             self.add_item(self.member_select)
 
@@ -200,6 +321,12 @@ class ManageTeamView(discord.ui.View):
     # --------------------------------------------------------------
     # Member management helpers
     # --------------------------------------------------------------
+    def _team_icon_url(self) -> Optional[str]:
+        role = self.guild.get_role(self.team.role_id)
+        if role and role.display_icon:
+            return role.display_icon.url
+        return self.team.icon_url
+
     def _select_member(self, member_id: int) -> None:
         self.selected_member = member_id
         is_captain = member_id == self.team.captain_id
@@ -218,7 +345,7 @@ class ManageTeamView(discord.ui.View):
     async def _refresh_message(self) -> None:
         self._refresh_member_options()
         await self.interaction.edit_original_response(
-            embed=build_team_embed(self.team, self.interaction.guild), view=self
+            embed=build_team_embed(self.team, self.guild), view=self
         )
 
     def _refresh_member_options(self) -> None:
@@ -226,7 +353,7 @@ class ManageTeamView(discord.ui.View):
             return
         options: List[discord.SelectOption] = []
         for member_id in self.team.members:
-            member = self.interaction.guild.get_member(member_id)
+            member = self.guild.get_member(member_id)
             label = member.display_name if member else f"Member {member_id}"
             if member_id == self.team.captain_id:
                 label = f"👑 {label}"
@@ -240,10 +367,10 @@ class ManageTeamView(discord.ui.View):
                 self.remove_item(self.member_select)
 
     async def _ensure_member(self, member_id: int) -> Optional[discord.Member]:
-        member = self.interaction.guild.get_member(member_id)
+        member = self.guild.get_member(member_id)
         if not member:
             try:
-                member = await self.interaction.guild.fetch_member(member_id)
+                member = await self.guild.fetch_member(member_id)
             except discord.NotFound:
                 return None
         return member
@@ -262,8 +389,61 @@ class ManageTeamView(discord.ui.View):
             if member.id in self.team.invites:
                 await select_interaction.response.send_message("That player already has a pending invite.", ephemeral=True)
                 return
+
             self.manager.add_invite(self.team, member.id)
-            await select_interaction.response.send_message(f"Invited {member.mention} to {self.team.name}.", ephemeral=True)
+
+            role = self.guild.get_role(self.team.role_id)
+            icon_url = None
+            if role and role.display_icon:
+                icon_url = role.display_icon.url
+            elif self.team.icon_url:
+                icon_url = self.team.icon_url
+
+            inviter = self.guild.get_member(self.interaction.user.id) or self.interaction.user
+            embed = discord.Embed(
+                title=f"You've been invited to {self.team.name}",
+                description=(
+                    f"{inviter.mention if hasattr(inviter, 'mention') else inviter.display_name} "
+                    f"invited you to join **{self.team.name}**. Use the buttons below to respond."
+                ),
+                colour=_hex_to_colour(self.team.hex_color),
+            )
+            if icon_url:
+                embed.set_thumbnail(url=icon_url)
+
+            invite_view = InviteDecisionView(
+                bot=self.bot,
+                manager=self.manager,
+                guild=self.guild,
+                team_role_id=self.team.role_id,
+                team_name=self.team.name,
+                team_icon_url=icon_url,
+                member_role_id=self.member_role.id if self.member_role else None,
+            )
+
+            try:
+                await member.send(embed=embed, view=invite_view)
+            except discord.Forbidden:
+                self.manager.remove_invite(self.team, member.id)
+                await select_interaction.response.send_message(
+                    f"Couldn't DM {member.mention}. They may have DMs disabled.", ephemeral=True
+                )
+                return
+
+            await select_interaction.response.send_message(
+                f"Sent an invite to {member.mention}. They'll receive a DM to accept or decline.",
+                ephemeral=True,
+            )
+            await self.bot.log_event(
+                self.guild,
+                title="Invite Sent",
+                description=(
+                    f"{member.mention} was invited to **{self.team.name}** by {self.interaction.user.mention}."
+                ),
+                colour=_hex_to_colour(self.team.hex_color),
+                thumbnail=icon_url,
+                emoji="✉️",
+            )
             await self._refresh_message()
 
         view.add_item(InviteUserSelect(handle_select))
@@ -278,7 +458,7 @@ class ManageTeamView(discord.ui.View):
         )
         await confirm.wait()
         if confirm.value:
-            guild = interaction.guild
+            guild = self.guild
             notes: List[str] = []
             role = guild.get_role(self.team.role_id)
             message = await _safe_delete_role(role, reason="Team disbanded")
@@ -307,9 +487,20 @@ class ManageTeamView(discord.ui.View):
                     )
                     if message:
                         notes.append(message)
+            icon_url = self._team_icon_url()
+            team_name = self.team.name
+            hex_colour = self.team.hex_color
             self.manager.delete_team(self.team.name)
             await self.interaction.edit_original_response(content="Team disbanded.", embed=None, view=None)
             self.stop()
+            await self.bot.log_event(
+                guild,
+                title="Team Disbanded",
+                description=f"**{team_name}** was disbanded by {interaction.user.mention}.",
+                colour=_hex_to_colour(hex_colour),
+                thumbnail=icon_url,
+                emoji="🗑️",
+            )
             if notes:
                 unique_notes = list(dict.fromkeys(notes))
                 await interaction.followup.send("\n".join(unique_notes), ephemeral=True)
@@ -319,7 +510,7 @@ class ManageTeamView(discord.ui.View):
         for member_id in self.team.members:
             if member_id == self.team.captain_id:
                 continue
-            member = interaction.guild.get_member(member_id)
+            member = self.guild.get_member(member_id)
             label = member.display_name if member else str(member_id)
             options.append(discord.SelectOption(label=label, value=str(member_id)))
         if not options:
@@ -357,6 +548,23 @@ class ManageTeamView(discord.ui.View):
                 response = "\n".join([response, *unique_notes])
             await select_interaction.response.send_message(response, ephemeral=True)
             await self._refresh_message()
+            icon_url = self._team_icon_url()
+            if old_captain_id != new_captain_id:
+                old_captain = self.guild.get_member(old_captain_id)
+                old_caption = old_captain.mention if old_captain else f"<@{old_captain_id}>"
+                description = (
+                    f"{member.mention} is now the captain of **{self.team.name}**, taking over from {old_caption}."
+                )
+            else:
+                description = f"{member.mention} remains the captain of **{self.team.name}**."
+            await self.bot.log_event(
+                self.guild,
+                title="Captain Updated",
+                description=description,
+                colour=_hex_to_colour(self.team.hex_color),
+                thumbnail=icon_url,
+                emoji="👑",
+            )
 
         select.callback = select_callback  # type: ignore[assignment]
         view = discord.ui.View()
@@ -377,7 +585,7 @@ class ManageTeamView(discord.ui.View):
         member = await self._ensure_member(self.selected_member)
         if member:
             notes: List[str] = []
-            role = interaction.guild.get_role(self.team.role_id)
+            role = self.guild.get_role(self.team.role_id)
             message = await _safe_remove_role(member, role, reason="Removed from team")
             if message:
                 notes.append(message)
@@ -395,10 +603,20 @@ class ManageTeamView(discord.ui.View):
         else:
             response = "Member removed from the roster."
         await interaction.response.send_message(response, ephemeral=True)
+        removed_id = self.selected_member
+        target_mention = member.mention if member else f"<@{removed_id}>"
         self.selected_member = None
         self.kick_button.disabled = True
         self.promote_button.disabled = True
         await self._refresh_message()
+        await self.bot.log_event(
+            self.guild,
+            title="Member Removed",
+            description=f"{target_mention} was removed from **{self.team.name}** by {interaction.user.mention}.",
+            colour=_hex_to_colour(self.team.hex_color),
+            thumbnail=self._team_icon_url(),
+            emoji="❌",
+        )
 
     async def _on_promote(self, interaction: discord.Interaction) -> None:
         if not self.selected_member:
@@ -421,104 +639,23 @@ class ManageTeamView(discord.ui.View):
             response = "\n".join([response, *unique_notes])
         await interaction.response.send_message(response, ephemeral=True)
         await self._refresh_message()
-
-
-class InviteNavigationView(discord.ui.View):
-    """View that lets a user accept or decline team invites."""
-
-    def __init__(
-        self,
-        *,
-        interaction: discord.Interaction,
-        teams: List[Team],
-        manager: TeamManager,
-        member_role: Optional[discord.Role] = None,
-    ) -> None:
-        super().__init__(timeout=300)
-        self.interaction = interaction
-        self.teams = teams
-        self.manager = manager
-        self.index = 0
-        self.member_role = member_role
-
-        self.prev_button = discord.ui.Button(label="Prev", style=discord.ButtonStyle.secondary)
-        self.prev_button.callback = self._prev  # type: ignore[assignment]
-        self.add_item(self.prev_button)
-
-        self.next_button = discord.ui.Button(label="Next", style=discord.ButtonStyle.secondary)
-        self.next_button.callback = self._next  # type: ignore[assignment]
-        self.add_item(self.next_button)
-
-        self.accept_button = discord.ui.Button(label="Accept", style=discord.ButtonStyle.success)
-        self.accept_button.callback = self._accept  # type: ignore[assignment]
-        self.add_item(self.accept_button)
-
-        self.decline_button = discord.ui.Button(label="Decline", style=discord.ButtonStyle.danger)
-        self.decline_button.callback = self._decline  # type: ignore[assignment]
-        self.add_item(self.decline_button)
-
-        self._update_buttons()
-
-    def _update_buttons(self) -> None:
-        self.prev_button.disabled = self.index == 0
-        self.next_button.disabled = self.index >= len(self.teams) - 1
-
-    def current_team(self) -> Team:
-        return self.teams[self.index]
-
-    async def _prev(self, interaction: discord.Interaction) -> None:
-        self.index = max(0, self.index - 1)
-        self._update_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def _next(self, interaction: discord.Interaction) -> None:
-        self.index = min(len(self.teams) - 1, self.index + 1)
-        self._update_buttons()
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
-
-    async def _accept(self, interaction: discord.Interaction) -> None:
-        team = self.current_team()
-        member = interaction.user
-        role = interaction.guild.get_role(team.role_id)
-        notes: List[str] = []
-        message = await _safe_add_role(member, role, reason="Accepted team invite")
-        if message:
-            notes.append(message)
-        message = await _safe_add_role(member, self.member_role, reason="Joined team roster")
-        if message:
-            notes.append(message)
-        self.manager.add_member(team, member.id)
-        response = f"You have joined {team.name}."
-        if notes:
-            unique_notes = list(dict.fromkeys(notes))
-            response = "\n".join([response, *unique_notes])
-        await interaction.response.send_message(response, ephemeral=True)
-        self.teams.remove(team)
-        if not self.teams:
-            await self.interaction.edit_original_response(content="You have no pending invites.", embed=None, view=None)
-            return
-        self.index = min(self.index, len(self.teams) - 1)
-        self._update_buttons()
-        await self.interaction.edit_original_response(embed=self.build_embed(), view=self)
-
-    async def _decline(self, interaction: discord.Interaction) -> None:
-        team = self.current_team()
-        self.manager.remove_invite(team, interaction.user.id)
-        await interaction.response.send_message(f"Declined invite to {team.name}.", ephemeral=True)
-        self.teams.remove(team)
-        if not self.teams:
-            await self.interaction.edit_original_response(content="You have no pending invites.", embed=None, view=None)
-            return
-        self.index = min(self.index, len(self.teams) - 1)
-        self._update_buttons()
-        await self.interaction.edit_original_response(embed=self.build_embed(), view=self)
-
-    def build_embed(self) -> discord.Embed:
-        team = self.current_team()
-        embed = build_team_embed(team, self.interaction.guild)
-        embed.title = f"Invite {self.index + 1}/{len(self.teams)}: {team.name}"
-        embed.description = "Use the buttons below to accept or decline the invite."
-        return embed
+        target_mention = member.mention if member else f"<@{self.selected_member}>"
+        if was_promoted:
+            title = "Co-Captain Promoted"
+            description = f"{target_mention} is now a co-captain for **{self.team.name}**."
+            emoji = "⭐"
+        else:
+            title = "Co-Captain Removed"
+            description = f"{target_mention} is no longer a co-captain for **{self.team.name}**."
+            emoji = "🔻"
+        await self.bot.log_event(
+            self.guild,
+            title=title,
+            description=description,
+            colour=_hex_to_colour(self.team.hex_color),
+            thumbnail=self._team_icon_url(),
+            emoji=emoji,
+        )
 
 
 async def prompt_confirmation(interaction: discord.Interaction, message: str) -> bool:

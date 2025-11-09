@@ -30,6 +30,7 @@ class BotConfig:
     captain_role_id: Optional[int]
     co_captain_role_id: Optional[int]
     team_member_role_id: Optional[int]
+    transactions_channel_id: Optional[int]
 
     @classmethod
     def from_env(cls) -> "BotConfig":
@@ -43,4 +44,5 @@ class BotConfig:
             captain_role_id=_get_int("CAPTAIN_ROLE_ID"),
             co_captain_role_id=_get_int("CO_CAPTAIN_ROLE_ID"),
             team_member_role_id=_get_int("TEAM_MEMBER_ROLE_ID"),
+            transactions_channel_id=_get_int("TRANSACTIONS_CHANNEL_ID"),
         )

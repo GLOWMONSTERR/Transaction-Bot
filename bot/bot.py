@@ -11,9 +11,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from .config import BotConfig
-from .team_manager import TeamManager
+from .team_manager import Team, TeamManager
 from .views import (
-    InviteNavigationView,
     ManageTeamView,
     RosterLookupView,
     build_team_embed,
@@ -49,6 +48,49 @@ class LeagueBot(commands.Bot):
     async def on_ready(self) -> None:
         log.info("Logged in as %s", self.user)
 
+    async def log_event(
+        self,
+        guild: discord.Guild,
+        *,
+        title: str,
+        description: str,
+        colour: Optional[discord.Colour] = None,
+        thumbnail: Optional[str] = None,
+        emoji: str = "📝",
+    ) -> None:
+        channel_id = self.config.transactions_channel_id
+        if not channel_id:
+            return
+
+        channel = guild.get_channel(channel_id)
+        if channel is None:
+            try:
+                channel = await guild.fetch_channel(channel_id)
+            except (discord.Forbidden, discord.HTTPException) as exc:
+                log.warning("Unable to fetch transactions channel %s: %s", channel_id, exc)
+                return
+
+        if isinstance(channel, discord.Thread):
+            target = channel
+        elif isinstance(channel, discord.TextChannel):
+            target = channel
+        else:
+            log.warning("Configured transactions channel %s is not a text-capable channel", channel_id)
+            return
+
+        embed = discord.Embed(
+            title=f"{emoji} {title}",
+            description=description,
+            colour=colour or discord.Colour.blurple(),
+        )
+        if thumbnail:
+            embed.set_thumbnail(url=thumbnail)
+
+        try:
+            await target.send(embed=embed)
+        except discord.HTTPException as exc:
+            log.warning("Failed to post event log message: %s", exc)
+
 
 class LeagueCommands(commands.Cog):
     """Slash-command collection that powers the league management workflow."""
@@ -63,6 +105,15 @@ class LeagueCommands(commands.Cog):
         if not role_id:
             return None
         return guild.get_role(role_id)
+
+    def _team_icon_url(self, guild: discord.Guild, team: Team) -> Optional[str]:
+        role = guild.get_role(team.role_id)
+        if role and role.display_icon:
+            return role.display_icon.url
+        return team.icon_url
+
+    def _team_colour(self, team: Team) -> discord.Colour:
+        return discord.Colour(int(team.hex_color.lstrip("#"), 16))
 
     def _require_admin(self, interaction: discord.Interaction) -> bool:
         if not interaction.user.guild_permissions.administrator:
@@ -151,6 +202,17 @@ class LeagueCommands(commands.Cog):
         if creation_notes:
             message = "\n".join([message, *creation_notes])
         await interaction.response.send_message(message, ephemeral=True)
+        role_icon_url = role.display_icon.url if role and role.display_icon else icon_url
+        await self.bot.log_event(
+            guild,
+            title="New Team Created!",
+            description=(
+                f"**{team.name}** was created by {interaction.user.mention}. Captain: {team_captain.mention}."
+            ),
+            colour=colour,
+            thumbnail=role_icon_url,
+            emoji="🆕",
+        )
 
     # ------------------------------------------------------------------
     @app_commands.command(name="manage-team", description="Manage your team roster")
@@ -170,6 +232,7 @@ class LeagueCommands(commands.Cog):
             interaction=interaction,
             team=team,
             manager=self.bot.team_manager,
+            bot=self.bot,
             is_admin=interaction.user.guild_permissions.administrator,
             roster_locked=self.bot.team_manager.roster_locked,
             captain_role=self._get_role(interaction.guild, self.bot.config.captain_role_id),
@@ -181,22 +244,6 @@ class LeagueCommands(commands.Cog):
             view=view,
             ephemeral=True,
         )
-
-    # ------------------------------------------------------------------
-    @app_commands.command(name="check-invites", description="View your pending team invites")
-    async def check_invites(self, interaction: discord.Interaction) -> None:
-        invites = self.bot.team_manager.invites_for_user(interaction.user.id)
-        if not invites:
-            await interaction.response.send_message("You have no pending invites.", ephemeral=True)
-            return
-
-        view = InviteNavigationView(
-            interaction=interaction,
-            teams=invites,
-            manager=self.bot.team_manager,
-            member_role=self._get_role(interaction.guild, self.bot.config.team_member_role_id),
-        )
-        await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
     # ------------------------------------------------------------------
     @app_commands.command(name="roster", description="Browse rosters for any team")
@@ -255,6 +302,14 @@ class LeagueCommands(commands.Cog):
         if notes:
             message = "\n".join([message, *list(dict.fromkeys(notes))])
         await interaction.followup.send(message, ephemeral=True)
+        await self.bot.log_event(
+            interaction.guild,
+            title="Member Left",
+            description=f"{interaction.user.mention} left **{team.name}**.",
+            colour=self._team_colour(team),
+            thumbnail=self._team_icon_url(interaction.guild, team),
+            emoji="🚪",
+        )
 
     # ------------------------------------------------------------------
     async def _team_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
@@ -341,6 +396,7 @@ class LeagueCommands(commands.Cog):
             interaction=interaction,
             team=team,
             manager=self.bot.team_manager,
+            bot=self.bot,
             is_admin=True,
             roster_locked=self.bot.team_manager.roster_locked,
             captain_role=self._get_role(interaction.guild, self.bot.config.captain_role_id),

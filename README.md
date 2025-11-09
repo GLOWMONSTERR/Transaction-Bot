@@ -5,8 +5,8 @@ A Discord bot built with [`discord.py`](https://discordpy.readthedocs.io/en/stab
 ## Features
 
 - `/create-team` automatically creates a coloured role, assigns a captain, and stores metadata in `data/teams.json`.
-- `/manage-team` gives captains and co-captains a management dashboard with invite, kick, promote, disband, and transfer controls.
-- `/check-invites` shows an interactive carousel of pending invites for any player.
+- `/manage-team` gives captains and co-captains a management dashboard with invite, kick, promote, disband, and transfer controls, sending direct-message invites that players can accept or decline instantly.
+- Optional transaction feed posts clean embeds whenever teams are created, captains change, players join/leave, or other roster actions occur.
 - `/leave` lets non-captain members leave their team after confirmation.
 - `/admin-edit`, `/admin-manage`, and `/admin-lock` offer complete administrative control, including roster locks and manual overrides.
 
@@ -84,6 +84,7 @@ The checklist below walks through everything from installing VS Code to seeing t
      - `GUILD_ID` (optional): a single server ID for faster command sync during development.
      - `CAPTAIN_ROLE_ID` / `CO_CAPTAIN_ROLE_ID` (optional): global role IDs if you use shared captain roles.
      - `TEAM_MEMBER_ROLE_ID` (optional): a general member role that everyone on a team should receive.
+     - `TRANSACTIONS_CHANNEL_ID` (optional): a text channel ID where the bot will post roster changes, team creations, and other updates.
 
 6. **Run and debug the bot**
    - Press **F5** or use **Run > Start Debugging**. When VS Code asks how to run it, pick **Python File**.
@@ -104,19 +105,29 @@ Once the bot is online, it will automatically register slash commands (instantly
 - **“Privileged message content intent is missing” warning**: The bot only uses slash commands, so the warning is harmless. If you want to silence it, open your application in the Developer Portal, go to **Bot > Privileged Gateway Intents**, and toggle **Message Content Intent** on. Restart the bot after saving.
 - **403 Forbidden “This server needs more boosts to perform this action”**: Discord only allows uploading role icons on servers with **Level 2** boosts. If your server is not boosted, leave the `profile_picture` field blank when running `/create-team`. The bot will still create the team and simply skip the icon upload.
 - **403 Forbidden “Missing Permissions” when assigning roles**: Discord prevents bots from giving out roles that are equal to or higher than the bot’s top role, or when the bot lacks the **Manage Roles** permission. Drag the bot’s role above the captain/member roles in **Server Settings > Roles** and ensure the **Manage Roles** permission is enabled when inviting the bot. The bot now finishes the command and reports which roles it could not assign so you know what to fix.
+- **“Couldn't DM … they may have DMs disabled” when inviting a player**: Discord blocks DMs when a user has closed messages from non-friends or from servers they share. Ask the player to enable DMs for the server temporarily, then press the **Invite** button again. The bot only adds the invite after the DM succeeds, so no stale invites remain in the JSON.
 
 ## Command summary
 
 | Command | Who can use it | Description |
 | --- | --- | --- |
 | `/create-team <team_name> <hex_code> <profile_picture> <team_captain>` | Admins | Creates a new team, role, and assigns the captain. |
-| `/manage-team` | Captains & co-captains | Interactive roster dashboard with invite, kick, promote, disband, and transfer options. |
-| `/check-invites` | Everyone | Browse, accept, or decline outstanding team invites. |
+| `/manage-team` | Captains & co-captains | Interactive roster dashboard with DM-based invites plus kick, promote, disband, and transfer options. |
 | `/roster` | Everyone | View any team's roster with a searchable dropdown selector. |
 | `/leave` | Team members | Leave your current team (captains must transfer or disband first). |
 | `/admin-edit` | Admins | Update team name, colour, logo, or captain. |
 | `/admin-manage` | Admins | Access the management dashboard for any team. |
 | `/admin-lock` | Admins | Toggle roster locks to prevent new invites. |
+
+### Invite flow
+
+- Captains press **Invite** inside `/manage-team`, search for a player, and the bot sends that user a direct message with **Accept** and **Decline** buttons.
+- The invite is only stored after the DM is delivered, so you never end up with invites that players cannot see.
+- If a player declines (or never responds), captains can re-open `/manage-team` and send another invite whenever they are ready.
+
+### Transaction feed
+
+If you set `TRANSACTIONS_CHANNEL_ID`, the bot posts a tidy embed whenever someone creates or disbands a team, joins or leaves a roster, promotes/demotes a co-captain, or transfers captaincy. This makes it easy for league staff (and spectators) to follow roster changes without opening the management UI.
 
 ## Data storage
 
