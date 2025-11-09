@@ -419,3 +419,59 @@ async def prompt_confirmation(interaction: discord.Interaction, message: str) ->
     await interaction.response.send_message(message, view=view, ephemeral=True)
     await view.wait()
     return bool(view.value)
+
+
+class RosterLookupView(discord.ui.View):
+    """Public view that lets users browse team rosters via a dropdown."""
+
+    def __init__(self, *, interaction: discord.Interaction, teams: List[Team]) -> None:
+        super().__init__(timeout=180)
+        if not teams:
+            raise ValueError("RosterLookupView requires at least one team")
+
+        self.interaction = interaction
+        self._team_map = {team.name.lower(): team for team in teams}
+        sorted_teams = sorted(teams, key=lambda team: team.name.lower())
+        self.current_team = sorted_teams[0]
+
+        options = []
+        for team in sorted_teams[:25]:
+            options.append(
+                discord.SelectOption(
+                    label=team.name,
+                    value=team.name.lower(),
+                    description=f"{len(team.members)} member(s)",
+                )
+            )
+
+        self.team_select = discord.ui.Select(
+            placeholder="Select a team to view",
+            min_values=1,
+            max_values=1,
+            options=options,
+        )
+        if self.team_select.options:
+            self.team_select.options[0].default = True
+        self.team_select.callback = self._on_select  # type: ignore[assignment]
+        self.add_item(self.team_select)
+
+    async def _on_select(self, interaction: discord.Interaction) -> None:
+        key = self.team_select.values[0]
+        team = self._team_map.get(key)
+        if not team:
+            await interaction.response.send_message("That team could not be found.", ephemeral=True)
+            return
+
+        self.current_team = team
+        guild = interaction.guild or self.interaction.guild
+        await interaction.response.edit_message(
+            embed=build_team_embed(team, guild),
+            view=self,
+        )
+
+    async def on_timeout(self) -> None:
+        self.team_select.disabled = True
+        try:
+            await self.interaction.edit_original_response(view=self)
+        except discord.HTTPException:
+            pass

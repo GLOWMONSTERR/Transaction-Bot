@@ -15,6 +15,7 @@ from .team_manager import TeamManager
 from .views import (
     InviteNavigationView,
     ManageTeamView,
+    RosterLookupView,
     build_team_embed,
     prompt_confirmation,
 )
@@ -151,6 +152,20 @@ class LeagueBot(commands.Bot):
 
         view = InviteNavigationView(interaction=interaction, teams=invites, manager=self.team_manager)
         await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
+
+    # ------------------------------------------------------------------
+    @app_commands.command(name="roster", description="Browse rosters for any team")
+    async def roster(self, interaction: discord.Interaction) -> None:
+        teams = sorted(self.team_manager.all_teams(), key=lambda team: team.name.lower())
+        if not teams:
+            await interaction.response.send_message("No teams have been created yet.", ephemeral=True)
+            return
+
+        view = RosterLookupView(interaction=interaction, teams=teams)
+        await interaction.response.send_message(
+            embed=build_team_embed(view.current_team, interaction.guild),
+            view=view,
+        )
 
     # ------------------------------------------------------------------
     @app_commands.command(name="leave", description="Leave your current team")

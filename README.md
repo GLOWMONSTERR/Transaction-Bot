@@ -94,6 +94,7 @@ When the bot starts, it will sync slash commands (instantly if `GUILD_ID` is set
 | `/create-team <team_name> <hex_code> <profile_picture> <team_captain>` | Admins | Creates a new team, role, and assigns the captain. |
 | `/manage-team` | Captains & co-captains | Interactive roster dashboard with invite, kick, promote, disband, and transfer options. |
 | `/check-invites` | Everyone | Browse, accept, or decline outstanding team invites. |
+| `/roster` | Everyone | View any team's roster with a searchable dropdown selector. |
 | `/leave` | Team members | Leave your current team (captains must transfer or disband first). |
 | `/admin-edit` | Admins | Update team name, colour, logo, or captain. |
 | `/admin-manage` | Admins | Access the management dashboard for any team. |
