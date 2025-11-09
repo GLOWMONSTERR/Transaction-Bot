@@ -15,6 +15,42 @@ def _hex_to_colour(hex_code: str) -> discord.Colour:
     return discord.Colour(int(hex_code, 16))
 
 
+async def _safe_add_role(member: discord.Member, role: Optional[discord.Role], *, reason: str) -> Optional[str]:
+    if not role:
+        return None
+    try:
+        await member.add_roles(role, reason=reason)
+    except discord.Forbidden:
+        return f"Missing permissions to add the {role.name} role."
+    except discord.HTTPException:
+        return f"Discord rejected adding the {role.name} role."
+    return None
+
+
+async def _safe_remove_role(member: discord.Member, role: Optional[discord.Role], *, reason: str) -> Optional[str]:
+    if not role:
+        return None
+    try:
+        await member.remove_roles(role, reason=reason)
+    except discord.Forbidden:
+        return f"Missing permissions to remove the {role.name} role."
+    except discord.HTTPException:
+        return f"Discord rejected removing the {role.name} role."
+    return None
+
+
+async def _safe_delete_role(role: Optional[discord.Role], *, reason: str) -> Optional[str]:
+    if not role:
+        return None
+    try:
+        await role.delete(reason=reason)
+    except discord.Forbidden:
+        return f"Missing permissions to delete the {role.name} role."
+    except discord.HTTPException:
+        return f"Discord rejected deleting the {role.name} role."
+    return None
+
+
 def build_team_embed(team: Team, guild: discord.Guild) -> discord.Embed:
     role = guild.get_role(team.role_id)
     colour = _hex_to_colour(team.hex_color)
@@ -243,26 +279,40 @@ class ManageTeamView(discord.ui.View):
         await confirm.wait()
         if confirm.value:
             guild = interaction.guild
+            notes: List[str] = []
             role = guild.get_role(self.team.role_id)
-            if role:
-                await role.delete(reason="Team disbanded")
-            # Clean up extra roles
-            if self.captain_role:
-                captain_member = await self._ensure_member(self.team.captain_id)
-                if captain_member:
-                    await captain_member.remove_roles(self.captain_role, reason="Team disbanded")
-            if self.co_captain_role:
-                for member_id in list(self.team.co_captains):
-                    member = await self._ensure_member(member_id)
-                    if member:
-                        await member.remove_roles(self.co_captain_role, reason="Team disbanded")
-            if self.member_role:
-                for member_id in list(self.team.members):
-                    member = await self._ensure_member(member_id)
-                    if member:
-                        await member.remove_roles(self.member_role, reason="Team disbanded")
+            message = await _safe_delete_role(role, reason="Team disbanded")
+            if message:
+                notes.append(message)
+            captain_member = await self._ensure_member(self.team.captain_id)
+            if captain_member:
+                message = await _safe_remove_role(
+                    captain_member, self.captain_role, reason="Team disbanded"
+                )
+                if message:
+                    notes.append(message)
+            for member_id in list(self.team.co_captains):
+                member = await self._ensure_member(member_id)
+                if member:
+                    message = await _safe_remove_role(
+                        member, self.co_captain_role, reason="Team disbanded"
+                    )
+                    if message:
+                        notes.append(message)
+            for member_id in list(self.team.members):
+                member = await self._ensure_member(member_id)
+                if member:
+                    message = await _safe_remove_role(
+                        member, self.member_role, reason="Team disbanded"
+                    )
+                    if message:
+                        notes.append(message)
             self.manager.delete_team(self.team.name)
             await self.interaction.edit_original_response(content="Team disbanded.", embed=None, view=None)
+            self.stop()
+            if notes:
+                unique_notes = list(dict.fromkeys(notes))
+                await interaction.followup.send("\n".join(unique_notes), ephemeral=True)
 
     async def _on_transfer(self, interaction: discord.Interaction) -> None:
         options = []
@@ -286,15 +336,26 @@ class ManageTeamView(discord.ui.View):
                 return
             old_captain_id = self.team.captain_id
             self.manager.set_captain(self.team, new_captain_id)
-            if self.captain_role:
-                await member.add_roles(self.captain_role, reason="Promoted to captain")
-            if self.captain_role and old_captain_id != new_captain_id:
+            notes: List[str] = []
+            message = await _safe_add_role(member, self.captain_role, reason="Promoted to captain")
+            if message:
+                notes.append(message)
+            if old_captain_id != new_captain_id:
                 old_captain = await self._ensure_member(old_captain_id)
                 if old_captain:
-                    await old_captain.remove_roles(self.captain_role, reason="Captaincy transferred")
-            if self.member_role:
-                await member.add_roles(self.member_role, reason="Joined team roster")
-            await select_interaction.response.send_message(f"Transferred captaincy to {member.mention}.", ephemeral=True)
+                    message = await _safe_remove_role(
+                        old_captain, self.captain_role, reason="Captaincy transferred"
+                    )
+                    if message:
+                        notes.append(message)
+            message = await _safe_add_role(member, self.member_role, reason="Joined team roster")
+            if message:
+                notes.append(message)
+            response = f"Transferred captaincy to {member.mention}."
+            if notes:
+                unique_notes = list(dict.fromkeys(notes))
+                response = "\n".join([response, *unique_notes])
+            await select_interaction.response.send_message(response, ephemeral=True)
             await self._refresh_message()
 
         select.callback = select_callback  # type: ignore[assignment]
@@ -315,14 +376,25 @@ class ManageTeamView(discord.ui.View):
 
         member = await self._ensure_member(self.selected_member)
         if member:
+            notes: List[str] = []
             role = interaction.guild.get_role(self.team.role_id)
-            if role:
-                await member.remove_roles(role, reason="Removed from team")
-            if self.co_captain_role and was_co_captain:
-                await member.remove_roles(self.co_captain_role, reason="Removed as co-captain")
-            if self.member_role:
-                await member.remove_roles(self.member_role, reason="Removed from team")
-        await interaction.response.send_message("Member removed from the roster.", ephemeral=True)
+            message = await _safe_remove_role(member, role, reason="Removed from team")
+            if message:
+                notes.append(message)
+            if was_co_captain:
+                message = await _safe_remove_role(member, self.co_captain_role, reason="Removed as co-captain")
+                if message:
+                    notes.append(message)
+            message = await _safe_remove_role(member, self.member_role, reason="Removed from team")
+            if message:
+                notes.append(message)
+            response = "Member removed from the roster."
+            if notes:
+                unique_notes = list(dict.fromkeys(notes))
+                response = "\n".join([response, *unique_notes])
+        else:
+            response = "Member removed from the roster."
+        await interaction.response.send_message(response, ephemeral=True)
         self.selected_member = None
         self.kick_button.disabled = True
         self.promote_button.disabled = True
@@ -334,13 +406,20 @@ class ManageTeamView(discord.ui.View):
             return
         was_promoted = self.manager.toggle_co_captain(self.team, self.selected_member)
         member = await self._ensure_member(self.selected_member)
-        if member and self.co_captain_role:
+        notes: List[str] = []
+        if member:
             if was_promoted:
-                await member.add_roles(self.co_captain_role, reason="Promoted to co-captain")
+                message = await _safe_add_role(member, self.co_captain_role, reason="Promoted to co-captain")
             else:
-                await member.remove_roles(self.co_captain_role, reason="Demoted from co-captain")
+                message = await _safe_remove_role(member, self.co_captain_role, reason="Demoted from co-captain")
+            if message:
+                notes.append(message)
         action = "Promoted" if was_promoted else "Removed co-captain"
-        await interaction.response.send_message(f"{action} successfully.", ephemeral=True)
+        response = f"{action} successfully."
+        if notes:
+            unique_notes = list(dict.fromkeys(notes))
+            response = "\n".join([response, *unique_notes])
+        await interaction.response.send_message(response, ephemeral=True)
         await self._refresh_message()
 
 
@@ -401,12 +480,19 @@ class InviteNavigationView(discord.ui.View):
         team = self.current_team()
         member = interaction.user
         role = interaction.guild.get_role(team.role_id)
-        if role:
-            await member.add_roles(role, reason="Accepted team invite")
-        if self.member_role:
-            await member.add_roles(self.member_role, reason="Joined team roster")
+        notes: List[str] = []
+        message = await _safe_add_role(member, role, reason="Accepted team invite")
+        if message:
+            notes.append(message)
+        message = await _safe_add_role(member, self.member_role, reason="Joined team roster")
+        if message:
+            notes.append(message)
         self.manager.add_member(team, member.id)
-        await interaction.response.send_message(f"You have joined {team.name}.", ephemeral=True)
+        response = f"You have joined {team.name}."
+        if notes:
+            unique_notes = list(dict.fromkeys(notes))
+            response = "\n".join([response, *unique_notes])
+        await interaction.response.send_message(response, ephemeral=True)
         self.teams.remove(team)
         if not self.teams:
             await self.interaction.edit_original_response(content="You have no pending invites.", embed=None, view=None)

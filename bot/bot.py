@@ -104,15 +104,18 @@ class LeagueCommands(commands.Cog):
         icon_url = None
         creation_notes: List[str] = []
         if profile_picture:
+            icon_url = profile_picture.url
             icon_bytes = await profile_picture.read()
             try:
                 await role.edit(display_icon=icon_bytes)
-                icon_url = profile_picture.url
             except discord.Forbidden:
                 log.warning("Server does not support role icons; skipping team icon upload.")
                 creation_notes.append(
                     "Team created, but the role icon could not be applied because this server needs to be Level 2 for role icons."
                 )
+            except discord.HTTPException as exc:
+                log.warning("Failed to apply role icon: %s", exc)
+                creation_notes.append("Team created, but the role icon could not be applied due to a Discord error.")
 
         try:
             team = self.bot.team_manager.create_team(
@@ -127,12 +130,22 @@ class LeagueCommands(commands.Cog):
             await interaction.response.send_message(str(exc), ephemeral=True)
             return
 
-        await team_captain.add_roles(role, reason="Team captain assigned")
+        async def grant_role(target_role: Optional[discord.Role], *, description: str, failure_label: str) -> None:
+            if not target_role:
+                return
+            try:
+                await team_captain.add_roles(target_role, reason=description)
+            except discord.Forbidden:
+                creation_notes.append(
+                    f"Team created, but I couldn't assign the {failure_label}. Move my bot role above it and ensure I have the Manage Roles permission."
+                )
+            except discord.HTTPException:
+                creation_notes.append(f"Team created, but assigning the {failure_label} failed due to a Discord error.")
+
+        await grant_role(role, description="Team captain assigned", failure_label=f"team role ({role.name})")
         captain_role = self._get_role(guild, self.bot.config.captain_role_id)
-        if captain_role:
-            await team_captain.add_roles(captain_role, reason="Granted global captain role")
-        if member_role:
-            await team_captain.add_roles(member_role, reason="Joined team roster")
+        await grant_role(captain_role, description="Granted global captain role", failure_label="captain role")
+        await grant_role(member_role, description="Joined team roster", failure_label="team member role")
 
         message = f"Team {team.name} created successfully!"
         if creation_notes:
@@ -197,6 +210,7 @@ class LeagueCommands(commands.Cog):
         await interaction.response.send_message(
             embed=build_team_embed(view.current_team, interaction.guild),
             view=view,
+            ephemeral=True,
         )
 
     # ------------------------------------------------------------------
@@ -215,16 +229,32 @@ class LeagueCommands(commands.Cog):
             return
 
         self.bot.team_manager.remove_member(team, interaction.user.id)
-        role = interaction.guild.get_role(team.role_id)
-        if role:
-            await interaction.user.remove_roles(role, reason="Left team")
-        co_captain_role = self._get_role(interaction.guild, self.bot.config.co_captain_role_id)
-        if co_captain_role:
-            await interaction.user.remove_roles(co_captain_role, reason="Left team")
-        member_role = self._get_role(interaction.guild, self.bot.config.team_member_role_id)
-        if member_role:
-            await interaction.user.remove_roles(member_role, reason="Left team")
-        await interaction.followup.send(f"You have left {team.name}.", ephemeral=True)
+        notes: List[str] = []
+
+        async def remove_role(target_role: Optional[discord.Role], *, label: str) -> None:
+            if not target_role:
+                return
+            try:
+                await interaction.user.remove_roles(target_role, reason="Left team")
+            except discord.Forbidden:
+                notes.append(
+                    f"Left the team, but I couldn't remove the {label}. Check my role position and permissions."
+                )
+            except discord.HTTPException:
+                notes.append(f"Left the team, but removing the {label} failed due to a Discord error.")
+
+        await remove_role(interaction.guild.get_role(team.role_id), label="team role")
+        await remove_role(
+            self._get_role(interaction.guild, self.bot.config.co_captain_role_id), label="co-captain role"
+        )
+        await remove_role(
+            self._get_role(interaction.guild, self.bot.config.team_member_role_id), label="team member role"
+        )
+
+        message = f"You have left {team.name}."
+        if notes:
+            message = "\n".join([message, *list(dict.fromkeys(notes))])
+        await interaction.followup.send(message, ephemeral=True)
 
     # ------------------------------------------------------------------
     async def _team_autocomplete(self, interaction: discord.Interaction, current: str) -> List[app_commands.Choice[str]]:
