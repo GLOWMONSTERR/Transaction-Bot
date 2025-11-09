@@ -31,6 +31,17 @@ A Discord bot built with [`discord.py`](https://discordpy.readthedocs.io/en/stab
 - A Discord application with a bot token and the **Server Members Intent** enabled.
 - (Recommended) [Visual Studio Code](https://code.visualstudio.com/) with the Python extension.
 
+## Create a Discord bot that only you can invite
+
+1. Visit the [Discord Developer Portal](https://discord.com/developers/applications) and click **New Application**.
+2. Give the application a name, accept the terms, and create it. This also creates the default *General Information* page where you can upload an icon.
+3. Open the **Bot** tab on the left and click **Add Bot** to turn the application into a bot user.
+4. Under the **Privileged Gateway Intents** section, enable **Server Members Intent** (and any other intents you plan to use).
+5. In the **Authorization Flow** section, make sure **Public Bot** is toggled **off**. This prevents anyone else from inviting the bot to their server.
+6. (Optional) Toggle **Requires OAuth2 Code Grant** off unless you are building a full OAuth flow.
+7. Scroll to the **Token** section, click **Reset Token**, and copy the generated token. Paste it into your `.env` file as `DISCORD_TOKEN`.
+8. Finally, use the **OAuth2 > URL Generator** tab to create your personal invite link with the `applications.commands` and `bot` scopes. Because the bot is not public, only you (and any users you explicitly add as Team Members in the Developer Portal) will be able to invite it with this link.
+
 ## Running the bot in Visual Studio Code
 
 1. **Clone the repository**
