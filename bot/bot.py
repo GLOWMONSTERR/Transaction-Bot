@@ -111,7 +111,7 @@ class LeagueCommands(commands.Cog):
             except discord.Forbidden:
                 log.warning("Server does not support role icons; skipping team icon upload.")
                 creation_notes.append(
-                    "Role icons require a Level 2 boosted server. The team was created without an icon."
+                    "Team created, but the role icon could not be applied because this server needs to be Level 2 for role icons."
                 )
 
         try:
