@@ -180,12 +180,6 @@ class InviteDecisionView(discord.ui.View):
             return team
         return self.manager.get_team(self.team_name)
 
-    def _team_icon(self, team: Team) -> Optional[str]:
-        role = self.guild.get_role(team.role_id)
-        if role and role.display_icon:
-            return role.display_icon.url
-        return team.icon_url or self.team_icon_url
-
     async def _resolve_member(self, user_id: int) -> Optional[discord.Member]:
         member = self.guild.get_member(user_id)
         if member:
@@ -243,14 +237,9 @@ class InviteDecisionView(discord.ui.View):
             response_lines.extend(notes)
         await self._finalise(interaction, "\n".join(response_lines))
 
-        icon_url = self._team_icon(team)
         await self.bot.log_event(
             self.guild,
-            title="Player Joined",
-            description=f"{member.mention} joined **{team.name}**.",
-            colour=_hex_to_colour(team.hex_color),
-            thumbnail=icon_url,
-            emoji="✅",
+            f"{member.mention} has joined **{team.name}**",
         )
 
     @discord.ui.button(label="Decline", style=discord.ButtonStyle.danger)
@@ -338,15 +327,6 @@ class ManageTeamView(discord.ui.View):
         self.promote_button = discord.ui.Button(label="Promote to co-captain", style=discord.ButtonStyle.primary, disabled=True)
         self.promote_button.callback = self._on_promote  # type: ignore[assignment]
         self.add_item(self.promote_button)
-
-    # --------------------------------------------------------------
-    # Member management helpers
-    # --------------------------------------------------------------
-    def _team_icon_url(self) -> Optional[str]:
-        role = self.guild.get_role(self.team.role_id)
-        if role and role.display_icon:
-            return role.display_icon.url
-        return self.team.icon_url
 
     def _select_member(self, member_id: int) -> None:
         self.selected_member = member_id
@@ -455,16 +435,6 @@ class ManageTeamView(discord.ui.View):
                 f"Sent an invite to {member.mention}. They'll receive a DM to accept or decline.",
                 ephemeral=True,
             )
-            await self.bot.log_event(
-                self.guild,
-                title="Invite Sent",
-                description=(
-                    f"{member.mention} was invited to **{self.team.name}** by {self.interaction.user.mention}."
-                ),
-                colour=_hex_to_colour(self.team.hex_color),
-                thumbnail=icon_url,
-                emoji="✉️",
-            )
             await self._refresh_message()
 
         view.add_item(InviteUserSelect(handle_select))
@@ -508,19 +478,13 @@ class ManageTeamView(discord.ui.View):
                     )
                     if message:
                         notes.append(message)
-            icon_url = self._team_icon_url()
             team_name = self.team.name
-            hex_colour = self.team.hex_color
             self.manager.delete_team(self.team.name)
             await self.interaction.edit_original_response(content="Team disbanded.", embed=None, view=None)
             self.stop()
             await self.bot.log_event(
                 guild,
-                title="Team Disbanded",
-                description=f"**{team_name}** was disbanded by {interaction.user.mention}.",
-                colour=_hex_to_colour(hex_colour),
-                thumbnail=icon_url,
-                emoji="🗑️",
+                f"## Team {team_name} has been disbanded",
             )
             if notes:
                 unique_notes = list(dict.fromkeys(notes))
@@ -569,23 +533,11 @@ class ManageTeamView(discord.ui.View):
                 response = "\n".join([response, *unique_notes])
             await select_interaction.response.send_message(response, ephemeral=True)
             await self._refresh_message()
-            icon_url = self._team_icon_url()
             if old_captain_id != new_captain_id:
-                old_captain = self.guild.get_member(old_captain_id)
-                old_caption = old_captain.mention if old_captain else f"<@{old_captain_id}>"
-                description = (
-                    f"{member.mention} is now the captain of **{self.team.name}**, taking over from {old_caption}."
+                await self.bot.log_event(
+                    self.guild,
+                    f"{member.mention} is now the captain of **{self.team.name}**",
                 )
-            else:
-                description = f"{member.mention} remains the captain of **{self.team.name}**."
-            await self.bot.log_event(
-                self.guild,
-                title="Captain Updated",
-                description=description,
-                colour=_hex_to_colour(self.team.hex_color),
-                thumbnail=icon_url,
-                emoji="👑",
-            )
 
         select.callback = select_callback  # type: ignore[assignment]
         view = discord.ui.View()
@@ -630,14 +582,7 @@ class ManageTeamView(discord.ui.View):
         self.kick_button.disabled = True
         self.promote_button.disabled = True
         await self._refresh_message()
-        await self.bot.log_event(
-            self.guild,
-            title="Member Removed",
-            description=f"{target_mention} was removed from **{self.team.name}** by {interaction.user.mention}.",
-            colour=_hex_to_colour(self.team.hex_color),
-            thumbnail=self._team_icon_url(),
-            emoji="❌",
-        )
+        # No transaction log needed for removals per simplified feed requirements.
 
     async def _on_promote(self, interaction: discord.Interaction) -> None:
         if not self.selected_member:
@@ -662,21 +607,10 @@ class ManageTeamView(discord.ui.View):
         await self._refresh_message()
         target_mention = member.mention if member else f"<@{self.selected_member}>"
         if was_promoted:
-            title = "Co-Captain Promoted"
-            description = f"{target_mention} is now a co-captain for **{self.team.name}**."
-            emoji = "⭐"
-        else:
-            title = "Co-Captain Removed"
-            description = f"{target_mention} is no longer a co-captain for **{self.team.name}**."
-            emoji = "🔻"
-        await self.bot.log_event(
-            self.guild,
-            title=title,
-            description=description,
-            colour=_hex_to_colour(self.team.hex_color),
-            thumbnail=self._team_icon_url(),
-            emoji=emoji,
-        )
+            await self.bot.log_event(
+                self.guild,
+                f"{target_mention} has been promoted to co-captain of **{self.team.name}**",
+            )
 
 
 async def prompt_confirmation(interaction: discord.Interaction, message: str) -> bool:

@@ -48,16 +48,7 @@ class LeagueBot(commands.Bot):
     async def on_ready(self) -> None:
         log.info("Logged in as %s", self.user)
 
-    async def log_event(
-        self,
-        guild: discord.Guild,
-        *,
-        title: str,
-        description: str,
-        colour: Optional[discord.Colour] = None,
-        thumbnail: Optional[str] = None,
-        emoji: str = "📝",
-    ) -> None:
+    async def log_event(self, guild: discord.Guild, content: str) -> None:
         channel_id = self.config.transactions_channel_id
         if not channel_id:
             return
@@ -77,11 +68,6 @@ class LeagueBot(commands.Bot):
         else:
             log.warning("Configured transactions channel %s is not a text-capable channel", channel_id)
             return
-
-        lines = [f"{emoji} **{title}**", description]
-        if thumbnail:
-            lines.append(thumbnail)
-        content = "\n".join(lines)
 
         try:
             await target.send(content)
@@ -199,17 +185,13 @@ class LeagueCommands(commands.Cog):
         if creation_notes:
             message = "\n".join([message, *creation_notes])
         await interaction.response.send_message(message, ephemeral=True)
-        role_icon_url = role.display_icon.url if role and role.display_icon else icon_url
-        await self.bot.log_event(
-            guild,
-            title="New Team Created!",
-            description=(
-                f"**{team.name}** was created by {interaction.user.mention}. Captain: {team_captain.mention}."
-            ),
-            colour=colour,
-            thumbnail=role_icon_url,
-            emoji="🆕",
+        role_ping = role.mention if isinstance(role, discord.Role) else f"**{team.name}**"
+        content = (
+            "## New Team Created!\n\n"
+            f"- Team Name: {role_ping}\n"
+            f"- Team Captain: {team_captain.mention}"
         )
+        await self.bot.log_event(guild, content)
 
     # ------------------------------------------------------------------
     @app_commands.command(name="manage-team", description="Manage your team roster")
@@ -301,11 +283,7 @@ class LeagueCommands(commands.Cog):
         await interaction.followup.send(message, ephemeral=True)
         await self.bot.log_event(
             interaction.guild,
-            title="Member Left",
-            description=f"{interaction.user.mention} left **{team.name}**.",
-            colour=self._team_colour(team),
-            thumbnail=self._team_icon_url(interaction.guild, team),
-            emoji="🚪",
+            f"{interaction.user.mention} has left **{team.name}**",
         )
 
     # ------------------------------------------------------------------
