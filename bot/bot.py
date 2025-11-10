@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import discord
 from discord import app_commands
@@ -125,6 +125,15 @@ class LeagueCommands(commands.Cog):
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
+    async def _send_ephemeral(self, interaction: discord.Interaction, *args: Any, **kwargs: Any) -> None:
+        """Reply to an interaction without risking double acknowledgements."""
+
+        kwargs.setdefault("ephemeral", True)
+        if interaction.response.is_done():
+            await interaction.followup.send(*args, **kwargs)
+        else:
+            await interaction.response.send_message(*args, **kwargs)
+
     def _get_role(self, guild: discord.Guild, role_id: Optional[int]) -> Optional[discord.Role]:
         if not role_id:
             return None
@@ -172,17 +181,17 @@ class LeagueCommands(commands.Cog):
         team_captain: discord.Member,
     ) -> None:
         if not self._require_admin(interaction):
-            await interaction.response.send_message("Only administrators can create teams.", ephemeral=True)
+            await self._send_ephemeral(interaction, "Only administrators can create teams.")
             return
 
         hex_code = hex_code.strip().lstrip("#")
         if len(hex_code) not in {6, 8}:
-            await interaction.response.send_message("Hex codes must be 6 or 8 characters.", ephemeral=True)
+            await self._send_ephemeral(interaction, "Hex codes must be 6 or 8 characters.")
             return
 
         guild = interaction.guild
         if guild is None:
-            await interaction.response.send_message("This command can only be used inside a server.", ephemeral=True)
+            await self._send_ephemeral(interaction, "This command can only be used inside a server.")
             return
 
         await interaction.response.defer(ephemeral=True, thinking=True)
@@ -217,7 +226,7 @@ class LeagueCommands(commands.Cog):
             )
         except ValueError as exc:
             await role.delete(reason="Rolling back team creation")
-            await interaction.followup.send(str(exc), ephemeral=True)
+            await self._send_ephemeral(interaction, str(exc))
             return
 
         async def grant_role(target_role: Optional[discord.Role], *, description: str, failure_label: str) -> None:
@@ -240,7 +249,7 @@ class LeagueCommands(commands.Cog):
         message = f"Team {team.name} created successfully!"
         if creation_notes:
             message = "\n".join([message, *creation_notes])
-        await interaction.followup.send(message, ephemeral=True)
+        await self._send_ephemeral(interaction, message)
         role_ping = role.mention if isinstance(role, discord.Role) else f"**{team.name}**"
         content = (
             "## New Team Created!\n\n"
@@ -254,14 +263,14 @@ class LeagueCommands(commands.Cog):
     async def manage_team(self, interaction: discord.Interaction) -> None:
         team = self.bot.team_manager.find_team_for_member(interaction.user.id)
         if not team:
-            await interaction.response.send_message("You are not a member of any team.", ephemeral=True)
+            await self._send_ephemeral(interaction, "You are not a member of any team.")
             return
 
         is_captain = interaction.user.id == team.captain_id
         is_co_captain = interaction.user.id in team.co_captains
         is_admin = self._require_admin(interaction)
         if not (is_captain or is_co_captain or is_admin):
-            await interaction.response.send_message("You are not authorised to manage this team.", ephemeral=True)
+            await self._send_ephemeral(interaction, "You are not authorised to manage this team.")
             return
 
         roster_locked = self.bot.team_manager.roster_locked
@@ -278,10 +287,10 @@ class LeagueCommands(commands.Cog):
             co_captain_role=self._get_role(interaction.guild, self.bot.config.co_captain_role_id),
             member_role=self._get_role(interaction.guild, self.bot.config.team_member_role_id),
         )
-        await interaction.response.send_message(
+        await self._send_ephemeral(
+            interaction,
             embed=build_team_embed(team, interaction.guild),
             view=view,
-            ephemeral=True,
         )
 
     # ------------------------------------------------------------------
@@ -289,14 +298,14 @@ class LeagueCommands(commands.Cog):
     async def roster(self, interaction: discord.Interaction) -> None:
         teams = sorted(self.bot.team_manager.all_teams(), key=lambda team: team.name.lower())
         if not teams:
-            await interaction.response.send_message("No teams have been created yet.", ephemeral=True)
+            await self._send_ephemeral(interaction, "No teams have been created yet.")
             return
 
         view = RosterLookupView(interaction=interaction, teams=teams)
-        await interaction.response.send_message(
+        await self._send_ephemeral(
+            interaction,
             embed=build_team_embed(view.current_team, interaction.guild),
             view=view,
-            ephemeral=True,
         )
 
     # ------------------------------------------------------------------
@@ -304,10 +313,10 @@ class LeagueCommands(commands.Cog):
     async def leave_team(self, interaction: discord.Interaction) -> None:
         team = self.bot.team_manager.find_team_for_member(interaction.user.id)
         if not team:
-            await interaction.response.send_message("You are not on a roster.", ephemeral=True)
+            await self._send_ephemeral(interaction, "You are not on a roster.")
             return
         if interaction.user.id == team.captain_id:
-            await interaction.response.send_message("Captains must transfer or disband their team first.", ephemeral=True)
+            await self._send_ephemeral(interaction, "Captains must transfer or disband their team first.")
             return
 
         confirmed = await prompt_confirmation(interaction, f"Leave {team.name}? This will remove your team role.")
@@ -373,12 +382,12 @@ class LeagueCommands(commands.Cog):
         new_captain: Optional[discord.Member] = None,
     ) -> None:
         if not self._require_admin(interaction):
-            await interaction.response.send_message("Administrator permissions are required.", ephemeral=True)
+            await self._send_ephemeral(interaction, "Administrator permissions are required.")
             return
 
         team = self.bot.team_manager.get_team(team_name)
         if not team:
-            await interaction.response.send_message("Team not found.", ephemeral=True)
+            await self._send_ephemeral(interaction, "Team not found.")
             return
 
         role = interaction.guild.get_role(team.role_id)
@@ -412,19 +421,19 @@ class LeagueCommands(commands.Cog):
             if member_role:
                 await new_captain.add_roles(member_role, reason="Joined team roster")
 
-        await interaction.response.send_message("Team updated successfully.", ephemeral=True)
+        await self._send_ephemeral(interaction, "Team updated successfully.")
 
     # ------------------------------------------------------------------
     @app_commands.command(name="admin-manage", description="Admin: manage any team")
     @app_commands.autocomplete(team_name=_team_autocomplete)
     async def admin_manage(self, interaction: discord.Interaction, team_name: str) -> None:
         if not self._require_admin(interaction):
-            await interaction.response.send_message("Administrator permissions are required.", ephemeral=True)
+            await self._send_ephemeral(interaction, "Administrator permissions are required.")
             return
 
         team = self.bot.team_manager.get_team(team_name)
         if not team:
-            await interaction.response.send_message("Team not found.", ephemeral=True)
+            await self._send_ephemeral(interaction, "Team not found.")
             return
 
         view = ManageTeamView(
@@ -440,41 +449,41 @@ class LeagueCommands(commands.Cog):
             co_captain_role=self._get_role(interaction.guild, self.bot.config.co_captain_role_id),
             member_role=self._get_role(interaction.guild, self.bot.config.team_member_role_id),
         )
-        await interaction.response.send_message(
+        await self._send_ephemeral(
+            interaction,
             embed=build_team_embed(team, interaction.guild),
             view=view,
-            ephemeral=True,
         )
 
     # ------------------------------------------------------------------
     @app_commands.command(name="admin-lock", description="Admin: toggle roster lock")
     async def admin_lock(self, interaction: discord.Interaction) -> None:
         if not self._require_admin(interaction):
-            await interaction.response.send_message("Administrator permissions are required.", ephemeral=True)
+            await self._send_ephemeral(interaction, "Administrator permissions are required.")
             return
 
         locked = not self.bot.team_manager.roster_locked
         self.bot.team_manager.set_roster_locked(locked)
         state = "locked" if locked else "unlocked"
-        await interaction.response.send_message(f"Rosters are now {state}.", ephemeral=True)
+        await self._send_ephemeral(interaction, f"Rosters are now {state}.")
 
     # ------------------------------------------------------------------
     @app_commands.command(name="admin-disband-all", description="Admin: disband every team")
     async def admin_disband_all(self, interaction: discord.Interaction) -> None:
         if not self._require_admin(interaction):
-            await interaction.response.send_message("Administrator permissions are required.", ephemeral=True)
+            await self._send_ephemeral(interaction, "Administrator permissions are required.")
             return
 
         teams = list(self.bot.team_manager.all_teams())
         if not teams:
-            await interaction.response.send_message("There are no teams to disband.", ephemeral=True)
+            await self._send_ephemeral(interaction, "There are no teams to disband.")
             return
 
         confirm_one = ConfirmView()
-        await interaction.response.send_message(
+        await self._send_ephemeral(
+            interaction,
             "This will delete every team, role, and roster entry. Confirm (1/3).",
             view=confirm_one,
-            ephemeral=True,
         )
         await confirm_one.wait()
         if confirm_one.value is not True:
