@@ -123,28 +123,40 @@ class InviteUserSelect(discord.ui.UserSelect):
 
         member: Optional[discord.Member] = None
 
-        if self.selected_users:
-            candidate = self.selected_users[0]
-            if isinstance(candidate, discord.Member):
-                member = candidate
-            else:
-                member = guild.get_member(candidate.id)
-
-        if member is None:
-            selected = self.values[0]
-            if isinstance(selected, discord.Member):
-                member = selected
-            elif isinstance(selected, discord.User):
-                member = guild.get_member(selected.id)
-            elif hasattr(selected, "id"):
-                member = guild.get_member(int(getattr(selected, "id")))
-            else:
+        selected = self.values[0]
+        if isinstance(selected, discord.Member):
+            member = selected
+        elif isinstance(selected, discord.User):
+            member = guild.get_member(selected.id)
+            if member is None:
                 try:
-                    member_id = int(selected)
-                except (TypeError, ValueError):
-                    member_id = None
-                if member_id is not None:
-                    member = guild.get_member(member_id)
+                    member = await guild.fetch_member(selected.id)
+                except discord.HTTPException:
+                    member = None
+        elif isinstance(selected, str):
+            try:
+                member_id = int(selected)
+            except (TypeError, ValueError):
+                member_id = None
+            if member_id is not None:
+                member = guild.get_member(member_id)
+                if member is None:
+                    try:
+                        member = await guild.fetch_member(member_id)
+                    except discord.HTTPException:
+                        member = None
+        elif hasattr(selected, "id"):
+            try:
+                member_id = int(getattr(selected, "id"))
+            except (TypeError, ValueError):
+                member_id = None
+            if member_id is not None:
+                member = guild.get_member(member_id)
+                if member is None:
+                    try:
+                        member = await guild.fetch_member(member_id)
+                    except discord.HTTPException:
+                        member = None
         if not member:
             await interaction.response.send_message("Member is not in this guild.", ephemeral=True)
             return
