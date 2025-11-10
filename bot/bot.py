@@ -14,8 +14,11 @@ from aiohttp import web
 from .config import BotConfig
 from .team_manager import Team, TeamManager
 from .views import (
+    ConfirmView,
     ManageTeamView,
     RosterLookupView,
+    _safe_delete_role,
+    _safe_remove_role,
     build_team_embed,
     prompt_confirmation,
 )
@@ -255,13 +258,16 @@ class LeagueCommands(commands.Cog):
             await interaction.response.send_message("You are not authorised to manage this team.", ephemeral=True)
             return
 
+        roster_locked = self.bot.team_manager.roster_locked
         view = ManageTeamView(
             interaction=interaction,
             team=team,
             manager=self.bot.team_manager,
             bot=self.bot,
             is_admin=is_admin,
-            roster_locked=self.bot.team_manager.roster_locked,
+            roster_locked=roster_locked,
+            can_invite=not roster_locked,
+            allow_force_add=False,
             captain_role=self._get_role(interaction.guild, self.bot.config.captain_role_id),
             co_captain_role=self._get_role(interaction.guild, self.bot.config.co_captain_role_id),
             member_role=self._get_role(interaction.guild, self.bot.config.team_member_role_id),
@@ -422,6 +428,8 @@ class LeagueCommands(commands.Cog):
             bot=self.bot,
             is_admin=True,
             roster_locked=self.bot.team_manager.roster_locked,
+            can_invite=True,
+            allow_force_add=True,
             captain_role=self._get_role(interaction.guild, self.bot.config.captain_role_id),
             co_captain_role=self._get_role(interaction.guild, self.bot.config.co_captain_role_id),
             member_role=self._get_role(interaction.guild, self.bot.config.team_member_role_id),
@@ -443,6 +451,120 @@ class LeagueCommands(commands.Cog):
         self.bot.team_manager.set_roster_locked(locked)
         state = "locked" if locked else "unlocked"
         await interaction.response.send_message(f"Rosters are now {state}.", ephemeral=True)
+
+    # ------------------------------------------------------------------
+    @app_commands.command(name="admin-disband-all", description="Admin: disband every team")
+    async def admin_disband_all(self, interaction: discord.Interaction) -> None:
+        if not self._require_admin(interaction):
+            await interaction.response.send_message("Administrator permissions are required.", ephemeral=True)
+            return
+
+        teams = list(self.bot.team_manager.all_teams())
+        if not teams:
+            await interaction.response.send_message("There are no teams to disband.", ephemeral=True)
+            return
+
+        confirm_one = ConfirmView()
+        await interaction.response.send_message(
+            "This will delete every team, role, and roster entry. Confirm (1/3).",
+            view=confirm_one,
+            ephemeral=True,
+        )
+        await confirm_one.wait()
+        if confirm_one.value is not True:
+            return
+
+        confirm_two = ConfirmView()
+        await interaction.followup.send(
+            "Second confirmation required (2/3).",
+            view=confirm_two,
+            ephemeral=True,
+        )
+        await confirm_two.wait()
+        if confirm_two.value is not True:
+            return
+
+        confirm_three = ConfirmView()
+        await interaction.followup.send(
+            "Final confirmation (3/3). This cannot be undone.",
+            view=confirm_three,
+            ephemeral=True,
+        )
+        await confirm_three.wait()
+        if confirm_three.value is not True:
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            await interaction.followup.send(
+                "This command can only be used inside a server.", ephemeral=True
+            )
+            return
+
+        captain_role = self._get_role(guild, self.bot.config.captain_role_id)
+        co_captain_role = self._get_role(guild, self.bot.config.co_captain_role_id)
+        member_role = self._get_role(guild, self.bot.config.team_member_role_id)
+
+        disbanded = 0
+        notes: List[str] = []
+
+        for team in teams:
+            disbanded += 1
+            team_role = guild.get_role(team.role_id)
+
+            message = await _safe_delete_role(team_role, reason="All teams disbanded by admin")
+            if message:
+                notes.append(f"{team.name}: {message}")
+
+            member_ids = set(team.members)
+            member_ids.add(team.captain_id)
+            member_ids.update(team.co_captains)
+
+            for member_id in member_ids:
+                member = guild.get_member(member_id)
+                if member is None:
+                    try:
+                        member = await guild.fetch_member(member_id)
+                    except discord.HTTPException:
+                        member = None
+                if member is None:
+                    continue
+
+                message = await _safe_remove_role(
+                    member, team_role, reason="All teams disbanded by admin"
+                )
+                if message:
+                    notes.append(f"{team.name}: {message}")
+
+                if member_id == team.captain_id:
+                    message = await _safe_remove_role(
+                        member, captain_role, reason="All teams disbanded by admin"
+                    )
+                    if message:
+                        notes.append(f"{team.name}: {message}")
+
+                if member_id in team.co_captains:
+                    message = await _safe_remove_role(
+                        member, co_captain_role, reason="All teams disbanded by admin"
+                    )
+                    if message:
+                        notes.append(f"{team.name}: {message}")
+
+                message = await _safe_remove_role(
+                    member, member_role, reason="All teams disbanded by admin"
+                )
+                if message:
+                    notes.append(f"{team.name}: {message}")
+
+            await self.bot.log_event(guild, f"## Team {team.name} has been disbanded")
+            self.bot.team_manager.delete_team(team.name)
+
+        summary = f"Disbanded {disbanded} team(s)."
+        if notes:
+            unique_notes = list(dict.fromkeys(notes))
+            summary = "\n".join([summary, *unique_notes])
+
+        await interaction.followup.send(summary, ephemeral=True)
 
 
 def run_bot() -> None:

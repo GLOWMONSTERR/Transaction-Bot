@@ -8,7 +8,7 @@ A Discord bot built with [`discord.py`](https://discordpy.readthedocs.io/en/stab
 - `/manage-team` gives captains and co-captains a management dashboard with invite, kick, promote, disband, and transfer controls, sending direct-message invites that players can accept or decline instantly.
 - Optional transaction feed posts simple text updates whenever teams are created, captains change, players join/leave, or other roster actions occur.
 - `/leave` lets non-captain members leave their team after confirmation.
-- `/admin-edit`, `/admin-manage`, and `/admin-lock` offer complete administrative control, including roster locks and manual overrides.
+- `/admin-edit`, `/admin-manage`, `/admin-lock`, and `/admin-disband-all` offer complete administrative control, including roster locks, forced additions, and mass disbands.
 
 ## Project layout
 
@@ -118,12 +118,13 @@ The bot now spins up a tiny web server alongside Discord. Visit `http://<your-ho
 | Command | Who can use it | Description |
 | --- | --- | --- |
 | `/create-team <team_name> <hex_code> <profile_picture> <team_captain>` | Admins | Creates a new team, role, and assigns the captain. |
-| `/manage-team` | Captains & co-captains | Interactive roster dashboard with DM-based invites plus kick, promote, disband, and transfer options. |
+| `/manage-team` | Captains & co-captains | Interactive roster dashboard with DM-based invites (disabled when roster lock is on) plus kick, promote, disband, and transfer options. |
 | `/roster` | Everyone | View any team's roster with a searchable dropdown selector. |
 | `/leave` | Team members | Leave your current team (captains must transfer or disband first). |
 | `/admin-edit` | Admins | Update team name, colour, logo, or captain. |
-| `/admin-manage` | Admins | Access the management dashboard for any team. |
+| `/admin-manage` | Admins | Access the management dashboard for any team with invite access even during roster locks and a force-add button for immediate joins. |
 | `/admin-lock` | Admins | Toggle roster locks to prevent new invites. |
+| `/admin-disband-all` | Admins | Triple-confirm wipe of every team, removing roles, clearing rosters, and deleting persisted data. |
 
 > **Who counts as an admin?** Anyone with the Discord “Administrator” server permission _or_ any role ID listed (up to three) in `ADMIN_ROLE_IDS` inside your `.env` file can access the admin-only commands.
 

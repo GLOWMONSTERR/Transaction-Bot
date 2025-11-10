@@ -295,6 +295,8 @@ class ManageTeamView(discord.ui.View):
         bot: "LeagueBot",
         is_admin: bool,
         roster_locked: bool,
+        can_invite: bool,
+        allow_force_add: bool = False,
         captain_role: Optional[discord.Role] = None,
         co_captain_role: Optional[discord.Role] = None,
         member_role: Optional[discord.Role] = None,
@@ -306,21 +308,29 @@ class ManageTeamView(discord.ui.View):
         self.bot = bot
         self.is_admin = is_admin
         self.roster_locked = roster_locked
+        self.can_invite = can_invite
         self.captain_role = captain_role
         self.co_captain_role = co_captain_role
         self.member_role = member_role
         self.selected_member: Optional[int] = None
         self.guild = interaction.guild
+        self.allow_force_add = allow_force_add
 
         self.member_select = MemberSelect(team=team, guild=self.guild, on_select=self._select_member)
         if self.member_select.options:
             self.add_item(self.member_select)
 
-        can_invite = not roster_locked or is_admin
-        invite_style = discord.ButtonStyle.green if can_invite else discord.ButtonStyle.gray
-        self.invite_button = discord.ui.Button(label="Invite", style=invite_style, disabled=not can_invite)
+        invite_style = discord.ButtonStyle.green if self.can_invite else discord.ButtonStyle.gray
+        self.invite_button = discord.ui.Button(
+            label="Invite", style=invite_style, disabled=not self.can_invite
+        )
         self.invite_button.callback = self._on_invite  # type: ignore[assignment]
         self.add_item(self.invite_button)
+
+        if self.allow_force_add:
+            self.force_add_button = discord.ui.Button(label="Add player", style=discord.ButtonStyle.primary)
+            self.force_add_button.callback = self._on_force_add  # type: ignore[assignment]
+            self.add_item(self.force_add_button)
 
         self.disband_button = discord.ui.Button(label="Disband", style=discord.ButtonStyle.danger)
         self.disband_button.callback = self._on_disband  # type: ignore[assignment]
@@ -389,8 +399,9 @@ class ManageTeamView(discord.ui.View):
         return member
 
     async def _on_invite(self, interaction: discord.Interaction) -> None:
-        if self.roster_locked and not self.is_admin:
-            await interaction.response.send_message("Rosters are locked.", ephemeral=True)
+        if not self.can_invite:
+            message = "Rosters are locked." if self.roster_locked else "Inviting is currently disabled."
+            await interaction.response.send_message(message, ephemeral=True)
             return
 
         view = discord.ui.View()
@@ -451,6 +462,46 @@ class ManageTeamView(discord.ui.View):
 
         view.add_item(InviteUserSelect(handle_select))
         await interaction.response.send_message("Search for a player to invite:", view=view, ephemeral=True)
+
+    async def _on_force_add(self, interaction: discord.Interaction) -> None:
+        view = discord.ui.View()
+
+        async def handle_select(select_interaction: discord.Interaction, member: discord.Member) -> None:
+            if member.id in self.team.members:
+                await select_interaction.response.send_message(
+                    "That player is already on this roster.", ephemeral=True
+                )
+                return
+
+            self.manager.add_member(self.team, member.id)
+
+            team_role = self.guild.get_role(self.team.role_id)
+            notes: List[str] = []
+
+            message = await _safe_add_role(member, team_role, reason="Added to team by admin")
+            if message:
+                notes.append(message)
+            message = await _safe_add_role(
+                member, self.member_role, reason="Added to team by admin"
+            )
+            if message:
+                notes.append(message)
+
+            response = f"Added {member.mention} to the roster."
+            if notes:
+                unique_notes = list(dict.fromkeys(notes))
+                response = "\n".join([response, *unique_notes])
+
+            await select_interaction.response.send_message(response, ephemeral=True)
+            await self._refresh_message()
+
+            await self.bot.log_event(
+                self.guild,
+                f"{member.mention} has joined **{self.team.name}**",
+            )
+
+        view.add_item(InviteUserSelect(handle_select))
+        await interaction.response.send_message("Select a player to add:", view=view, ephemeral=True)
 
     async def _on_disband(self, interaction: discord.Interaction) -> None:
         confirm = ConfirmView()
