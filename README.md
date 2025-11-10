@@ -103,7 +103,13 @@ Once the bot is online, it will automatically register slash commands (instantly
 
 ### Built-in keep-alive web page
 
-The bot now spins up a tiny web server alongside Discord. Visit `http://<your-host>:<port>/` to see a simple JSON status payload, or `http://<your-host>:<port>/ping` to get a `pong` response. On free hosts (Replit, Render, Oracle, etc.) you can schedule a ping every 30 minutes to the `/ping` endpoint to keep the process active without any additional setup.
+The bot now spins up a tiny web server alongside Discord.
+
+1. After the bot starts, open `http://<your-host>:<port>/ping` in a browser (or run `curl http://<your-host>:<port>/ping`). You should see the plain-text response `pong`. Every time that page is loaded, the hosting platform counts it as activity and keeps the container awake.
+2. Optional: visit `http://<your-host>:<port>/` to view a JSON health payload that includes the currently connected bot username. This is helpful when debugging deployments.
+3. To keep the bot online on free tiers that sleep, configure your uptime checker (UptimeRobot, FreshPing, cron-job.org, etc.) to send an HTTP GET request to the `/ping` URL every 5–10 minutes. The request does not need any headers or body—Render and similar providers only require that the endpoint is hit periodically.
+
+If you change the listening port via `WEB_PORT`, update the URL you monitor accordingly. The default binding is `0.0.0.0:8080`, which most hosts expose automatically.
 
 ### Troubleshooting command sync and intents
 
