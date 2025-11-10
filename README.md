@@ -85,6 +85,7 @@ The checklist below walks through everything from installing VS Code to seeing t
      - `CAPTAIN_ROLE_ID` / `CO_CAPTAIN_ROLE_ID` (optional): global role IDs if you use shared captain roles.
      - `TEAM_MEMBER_ROLE_ID` (optional): a general member role that everyone on a team should receive.
      - `TRANSACTIONS_CHANNEL_ID` (optional): a text channel ID where the bot will post roster changes, team creations, and other updates.
+     - `ADMIN_ROLE_IDS` (optional): a comma-separated list (up to three) of role IDs (for example `123,456`) whose members should be treated as bot admins even if they don't have the Discord-wide Administrator permission.
 
 6. **Run and debug the bot**
    - Press **F5** or use **Run > Start Debugging**. When VS Code asks how to run it, pick **Python File**.
@@ -118,6 +119,8 @@ Once the bot is online, it will automatically register slash commands (instantly
 | `/admin-edit` | Admins | Update team name, colour, logo, or captain. |
 | `/admin-manage` | Admins | Access the management dashboard for any team. |
 | `/admin-lock` | Admins | Toggle roster locks to prevent new invites. |
+
+> **Who counts as an admin?** Anyone with the Discord “Administrator” server permission _or_ any role ID listed (up to three) in `ADMIN_ROLE_IDS` inside your `.env` file can access the admin-only commands.
 
 ### Invite flow
 

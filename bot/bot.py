@@ -99,9 +99,18 @@ class LeagueCommands(commands.Cog):
         return discord.Colour(int(team.hex_color.lstrip("#"), 16))
 
     def _require_admin(self, interaction: discord.Interaction) -> bool:
-        if not interaction.user.guild_permissions.administrator:
-            return False
-        return True
+        member = interaction.user
+        if isinstance(member, discord.Member):
+            if member.guild_permissions.administrator:
+                return True
+
+            configured_roles = set(self.bot.config.admin_role_ids)
+            if configured_roles:
+                user_roles = {role.id for role in member.roles}
+                if configured_roles.intersection(user_roles):
+                    return True
+
+        return False
 
     # ------------------------------------------------------------------
     # Slash commands
@@ -121,7 +130,7 @@ class LeagueCommands(commands.Cog):
         profile_picture: Optional[discord.Attachment],
         team_captain: discord.Member,
     ) -> None:
-        if not interaction.user.guild_permissions.administrator:
+        if not self._require_admin(interaction):
             await interaction.response.send_message("Only administrators can create teams.", ephemeral=True)
             return
 
@@ -203,7 +212,8 @@ class LeagueCommands(commands.Cog):
 
         is_captain = interaction.user.id == team.captain_id
         is_co_captain = interaction.user.id in team.co_captains
-        if not (is_captain or is_co_captain or interaction.user.guild_permissions.administrator):
+        is_admin = self._require_admin(interaction)
+        if not (is_captain or is_co_captain or is_admin):
             await interaction.response.send_message("You are not authorised to manage this team.", ephemeral=True)
             return
 
@@ -212,7 +222,7 @@ class LeagueCommands(commands.Cog):
             team=team,
             manager=self.bot.team_manager,
             bot=self.bot,
-            is_admin=interaction.user.guild_permissions.administrator,
+            is_admin=is_admin,
             roster_locked=self.bot.team_manager.roster_locked,
             captain_role=self._get_role(interaction.guild, self.bot.config.captain_role_id),
             co_captain_role=self._get_role(interaction.guild, self.bot.config.co_captain_role_id),

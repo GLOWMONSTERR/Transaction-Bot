@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -21,6 +21,26 @@ def _get_int(name: str) -> Optional[int]:
         raise ValueError(f"Environment variable {name} must be an integer") from exc
 
 
+def _get_int_list(name: str) -> Tuple[int, ...]:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return ()
+
+    ids = []
+    for part in value.split(","):
+        stripped = part.strip()
+        if not stripped:
+            continue
+        try:
+            ids.append(int(stripped))
+        except ValueError as exc:  # pragma: no cover - defensive programming
+            raise ValueError(
+                f"Environment variable {name} must be a comma-separated list of integers"
+            ) from exc
+
+    return tuple(ids)
+
+
 @dataclass(frozen=True)
 class BotConfig:
     """Runtime configuration for the Discord bot."""
@@ -31,6 +51,7 @@ class BotConfig:
     co_captain_role_id: Optional[int]
     team_member_role_id: Optional[int]
     transactions_channel_id: Optional[int]
+    admin_role_ids: Tuple[int, ...]
 
     @classmethod
     def from_env(cls) -> "BotConfig":
@@ -45,4 +66,5 @@ class BotConfig:
             co_captain_role_id=_get_int("CO_CAPTAIN_ROLE_ID"),
             team_member_role_id=_get_int("TEAM_MEMBER_ROLE_ID"),
             transactions_channel_id=_get_int("TRANSACTIONS_CHANNEL_ID"),
+            admin_role_ids=_get_int_list("ADMIN_ROLE_IDS"),
         )
