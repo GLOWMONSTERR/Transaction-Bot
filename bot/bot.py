@@ -181,6 +181,12 @@ class LeagueCommands(commands.Cog):
             return
 
         guild = interaction.guild
+        if guild is None:
+            await interaction.response.send_message("This command can only be used inside a server.", ephemeral=True)
+            return
+
+        await interaction.response.defer(ephemeral=True, thinking=True)
+
         colour = discord.Colour(int(hex_code, 16))
         role = await guild.create_role(name=team_name, colour=colour, reason="New league team")
         member_role = self._get_role(guild, self.bot.config.team_member_role_id)
@@ -211,7 +217,7 @@ class LeagueCommands(commands.Cog):
             )
         except ValueError as exc:
             await role.delete(reason="Rolling back team creation")
-            await interaction.response.send_message(str(exc), ephemeral=True)
+            await interaction.followup.send(str(exc), ephemeral=True)
             return
 
         async def grant_role(target_role: Optional[discord.Role], *, description: str, failure_label: str) -> None:
@@ -234,7 +240,7 @@ class LeagueCommands(commands.Cog):
         message = f"Team {team.name} created successfully!"
         if creation_notes:
             message = "\n".join([message, *creation_notes])
-        await interaction.response.send_message(message, ephemeral=True)
+        await interaction.followup.send(message, ephemeral=True)
         role_ping = role.mention if isinstance(role, discord.Role) else f"**{team.name}**"
         content = (
             "## New Team Created!\n\n"
