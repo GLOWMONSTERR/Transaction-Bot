@@ -408,7 +408,11 @@ class LeagueCommands(commands.Cog):
             self.bot.team_manager.set_icon_url(team, new_logo.url)
         if new_captain:
             old_captain_id = team.captain_id
-            self.bot.team_manager.set_captain(team, new_captain.id)
+            try:
+                self.bot.team_manager.set_captain(team, new_captain.id)
+            except ValueError as exc:
+                await self._send_ephemeral(interaction, str(exc))
+                return
             captain_role = self._get_role(interaction.guild, self.bot.config.captain_role_id)
             member_role = self._get_role(interaction.guild, self.bot.config.team_member_role_id)
             old_member = interaction.guild.get_member(old_captain_id)

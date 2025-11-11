@@ -227,6 +227,13 @@ class InviteDecisionView(discord.ui.View):
             await self._finalise(interaction, "You need to be in the server to accept this invite.")
             return
 
+        if self.manager.is_roster_full(team):
+            await self._finalise(
+                interaction,
+                f"{team.name} already has the maximum of {self.manager.max_roster_size()} players.",
+            )
+            return
+
         if member.id in team.members:
             self.manager.remove_invite(team, member.id)
             await self._finalise(interaction, "You're already on that roster.")
@@ -242,7 +249,11 @@ class InviteDecisionView(discord.ui.View):
         if message:
             notes.append(message)
 
-        self.manager.add_member(team, member.id)
+        try:
+            self.manager.add_member(team, member.id)
+        except ValueError as exc:
+            await self._finalise(interaction, str(exc))
+            return
 
         response_lines = [f"You joined {team.name}!"]
         if notes:
@@ -320,10 +331,7 @@ class ManageTeamView(discord.ui.View):
         if self.member_select.options:
             self.add_item(self.member_select)
 
-        invite_style = discord.ButtonStyle.green if self.can_invite else discord.ButtonStyle.gray
-        self.invite_button = discord.ui.Button(
-            label="Invite", style=invite_style, disabled=not self.can_invite
-        )
+        self.invite_button = discord.ui.Button(label="Invite", style=discord.ButtonStyle.green)
         self.invite_button.callback = self._on_invite  # type: ignore[assignment]
         self.add_item(self.invite_button)
 
@@ -350,6 +358,8 @@ class ManageTeamView(discord.ui.View):
         self.promote_button.callback = self._on_promote  # type: ignore[assignment]
         self.add_item(self.promote_button)
 
+        self._update_roster_actions()
+
     def _select_member(self, member_id: int) -> None:
         self.selected_member = member_id
         is_captain = member_id == self.team.captain_id
@@ -367,6 +377,7 @@ class ManageTeamView(discord.ui.View):
 
     async def _refresh_message(self) -> None:
         self._refresh_member_options()
+        self._update_roster_actions()
         await self.interaction.edit_original_response(
             embed=build_team_embed(self.team, self.guild), view=self
         )
@@ -389,6 +400,17 @@ class ManageTeamView(discord.ui.View):
             if self.member_select in self.children:
                 self.remove_item(self.member_select)
 
+    def _update_roster_actions(self) -> None:
+        roster_full = self.manager.is_roster_full(self.team)
+        allowed = self.can_invite and not roster_full
+        if hasattr(self, "invite_button"):
+            self.invite_button.disabled = not allowed
+            self.invite_button.style = (
+                discord.ButtonStyle.green if allowed else discord.ButtonStyle.gray
+            )
+        if getattr(self, "allow_force_add", False) and hasattr(self, "force_add_button"):
+            self.force_add_button.disabled = roster_full
+
     async def _ensure_member(self, member_id: int) -> Optional[discord.Member]:
         member = self.guild.get_member(member_id)
         if not member:
@@ -404,6 +426,13 @@ class ManageTeamView(discord.ui.View):
             await interaction.response.send_message(message, ephemeral=True)
             return
 
+        if self.manager.is_roster_full(self.team):
+            await interaction.response.send_message(
+                f"This roster already has the maximum of {self.manager.max_roster_size()} players.",
+                ephemeral=True,
+            )
+            return
+
         view = discord.ui.View()
 
         async def handle_select(select_interaction: discord.Interaction, member: discord.Member) -> None:
@@ -412,6 +441,12 @@ class ManageTeamView(discord.ui.View):
                 return
             if member.id in self.team.invites:
                 await select_interaction.response.send_message("That player already has a pending invite.", ephemeral=True)
+                return
+            if self.manager.is_roster_full(self.team):
+                await select_interaction.response.send_message(
+                    f"This roster already has the maximum of {self.manager.max_roster_size()} players.",
+                    ephemeral=True,
+                )
                 return
 
             self.manager.add_invite(self.team, member.id)
@@ -464,6 +499,13 @@ class ManageTeamView(discord.ui.View):
         await interaction.response.send_message("Search for a player to invite:", view=view, ephemeral=True)
 
     async def _on_force_add(self, interaction: discord.Interaction) -> None:
+        if self.manager.is_roster_full(self.team):
+            await interaction.response.send_message(
+                f"This roster already has the maximum of {self.manager.max_roster_size()} players.",
+                ephemeral=True,
+            )
+            return
+
         view = discord.ui.View()
 
         async def handle_select(select_interaction: discord.Interaction, member: discord.Member) -> None:
@@ -473,7 +515,18 @@ class ManageTeamView(discord.ui.View):
                 )
                 return
 
-            self.manager.add_member(self.team, member.id)
+            if self.manager.is_roster_full(self.team):
+                await select_interaction.response.send_message(
+                    f"This roster already has the maximum of {self.manager.max_roster_size()} players.",
+                    ephemeral=True,
+                )
+                return
+
+            try:
+                self.manager.add_member(self.team, member.id)
+            except ValueError as exc:
+                await select_interaction.response.send_message(str(exc), ephemeral=True)
+                return
 
             team_role = self.guild.get_role(self.team.role_id)
             notes: List[str] = []
@@ -651,7 +704,11 @@ class ManageTeamView(discord.ui.View):
         if not self.selected_member:
             await interaction.response.send_message("Select a member first.", ephemeral=True)
             return
-        was_promoted = self.manager.toggle_co_captain(self.team, self.selected_member)
+        try:
+            was_promoted = self.manager.toggle_co_captain(self.team, self.selected_member)
+        except ValueError as exc:
+            await interaction.response.send_message(str(exc), ephemeral=True)
+            return
         member = await self._ensure_member(self.selected_member)
         notes: List[str] = []
         if member:

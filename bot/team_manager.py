@@ -8,6 +8,9 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 
+MAX_ROSTER_SIZE = 5
+
+
 @dataclass
 class Team:
     """Represents a competitive team in the league."""
@@ -109,6 +112,13 @@ class TeamManager:
     # ------------------------------------------------------------------
     # Mutations
     # ------------------------------------------------------------------
+    @staticmethod
+    def max_roster_size() -> int:
+        return MAX_ROSTER_SIZE
+
+    def is_roster_full(self, team: Team) -> bool:
+        return len(team.members) >= MAX_ROSTER_SIZE
+
     def create_team(
         self,
         *,
@@ -148,6 +158,10 @@ class TeamManager:
 
     def add_member(self, team: Team, member_id: int) -> None:
         if member_id not in team.members:
+            if self.is_roster_full(team):
+                raise ValueError(
+                    f"This roster already has the maximum of {MAX_ROSTER_SIZE} players."
+                )
             team.members.append(member_id)
         if member_id in team.invites:
             team.invites.remove(member_id)
@@ -164,6 +178,10 @@ class TeamManager:
 
     def set_captain(self, team: Team, member_id: int) -> None:
         if member_id not in team.members:
+            if self.is_roster_full(team):
+                raise ValueError(
+                    f"Cannot promote because the roster already has {MAX_ROSTER_SIZE} players."
+                )
             team.members.append(member_id)
         if member_id in team.co_captains:
             team.co_captains.remove(member_id)
@@ -176,6 +194,10 @@ class TeamManager:
             result = False
         else:
             if member_id not in team.members:
+                if self.is_roster_full(team):
+                    raise ValueError(
+                        f"Cannot add another member; rosters are limited to {MAX_ROSTER_SIZE} players."
+                    )
                 team.members.append(member_id)
             team.co_captains.append(member_id)
             result = True
