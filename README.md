@@ -336,3 +336,36 @@ You can run the bot 24/7 without paying by using Oracle Cloud Infrastructure's *
    - Store a backup of `data/teams.json` periodically (`scp ubuntu@YOUR_PUBLIC_IP:~/Transaction-Bot/data/teams.json ./backup.json`).
 
 Whenever you need to deploy updates, SSH back in, `cd` into the repo, pull the latest changes (`git pull`), reactivate `.venv`, and restart the bot inside your tmux session.
+
+## Hosting on your own server with a nested projects folder
+
+If you keep everything under a `projects` directory (for example, `~/projects/your-projects/Transaction-Bot`), here is a straight-through setup you can paste into your shell. Replace the URL if you use your own fork.
+
+```bash
+# 1) Move into your projects umbrella folder (create it if needed)
+mkdir -p ~/projects/your-projects
+cd ~/projects/your-projects
+
+# 2) Clone the bot and enter it
+git clone https://github.com/YOUR_USERNAME/Transaction-Bot.git
+cd Transaction-Bot
+
+# 3) Create and activate the virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# 4) Install dependencies
+pip install -r requirements.txt
+
+# 5) Configure environment variables
+cp .env.example .env
+nano .env   # paste your Discord token, guild ID, admin roles, etc.
+
+# 6) Launch the bot (from inside the repo)
+python -m bot.bot
+```
+
+Tips for this layout:
+
+- Any time you SSH back in, run `cd ~/projects/your-projects/Transaction-Bot && source .venv/bin/activate` before starting the bot so Python picks up the right environment.
+- If you use tmux or screen, start the session from inside `~/projects/your-projects/Transaction-Bot` so restarts are as simple as `python -m bot.bot`.
