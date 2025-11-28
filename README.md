@@ -135,6 +135,55 @@ If you change the listening port via `WEB_PORT`, update the URL you monitor acco
 
 > **Who counts as an admin?** Anyone with the Discord “Administrator” server permission _or_ any role ID listed (up to three) in `ADMIN_ROLE_IDS` inside your `.env` file can access the admin-only commands.
 
+## Running the bot on a DigitalOcean Ubuntu droplet (command-line walkthrough)
+
+If you are using a fresh DigitalOcean droplet (for example, Ubuntu 22.04 Premium Intel) and keep your code in `/projects/Transaction-Bot`, this copy/paste guide gets you from a clean machine to a running bot. These steps assume you are SSH’d in as `root`, but they also work for a non-root user with `sudo`.
+
+1. **Install system packages** (Python, git, and the venv helper):
+   ```bash
+   sudo apt update
+   sudo apt install -y python3 python3-venv python3-pip git
+   ```
+
+2. **Create your projects folder** (skip if it already exists) and clone the repo:
+   ```bash
+   mkdir -p ~/projects
+   cd ~/projects
+   git clone https://github.com/your-username/Transaction-Bot.git
+   cd Transaction-Bot
+   ```
+
+3. **Create the virtual environment.** If you previously saw `No such file or directory` when running `source .venv/bin/activate`, it usually means the `.venv` folder never got created because `python3-venv` was missing. Re-run the venv creation after installing the package in step 1:
+   ```bash
+   python3 -m venv .venv
+   ```
+
+4. **Activate the environment.** This command must be run inside the project folder where `.venv` lives:
+   ```bash
+   source .venv/bin/activate
+   ```
+   After activation your prompt should start with `(.venv)`. If it does not, run `ls -a` to confirm the `.venv` directory exists and that you are in `~/projects/Transaction-Bot`.
+
+5. **Install dependencies:**
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+6. **Configure your `.env`:**
+   ```bash
+   cp .env.example .env
+   nano .env  # or your preferred editor
+   ```
+   Fill in `DISCORD_TOKEN`, `GUILD_ID`, and any optional role/channel IDs. Save and exit.
+
+7. **Launch the bot:**
+   ```bash
+   python -m bot.bot
+   ```
+   You should see “Logged in as …” plus the keep-alive server binding. Press `Ctrl+C` to stop. To keep the bot running after you log out, consider using a process supervisor like `tmux`, `screen`, or `systemd` (DigitalOcean’s docs show how to create a simple systemd service).
+
+**Quick fix for missing `.venv/bin/activate`:** make sure you ran step 1 (installs `python3-venv`), step 3 (creates the `.venv` folder), and that your shell is in the same directory as `.venv` before activating. If `.venv` exists but activation still fails, delete it (`rm -rf .venv`) and recreate it with `python3 -m venv .venv`.
+
 ### Invite flow
 
 - Captains press **Invite** inside `/manage-team`, search for a player, and the bot sends that user a direct message with **Accept** and **Decline** buttons.
