@@ -18,6 +18,15 @@ def _hex_to_colour(hex_code: str) -> discord.Colour:
     return discord.Colour(int(hex_code, 16))
 
 
+async def _reply_ephemeral(interaction: discord.Interaction, message: str) -> None:
+    """Send an ephemeral reply even if the interaction was already acknowledged."""
+
+    if interaction.response.is_done():
+        await interaction.followup.send(message, ephemeral=True)
+    else:
+        await interaction.response.send_message(message, ephemeral=True)
+
+
 async def _safe_add_role(member: discord.Member, role: Optional[discord.Role], *, reason: str) -> Optional[str]:
     if not role:
         return None
@@ -335,6 +344,12 @@ class ManageTeamView(discord.ui.View):
         self.invite_button.callback = self._on_invite  # type: ignore[assignment]
         self.add_item(self.invite_button)
 
+        self.cancel_invite_button = discord.ui.Button(
+            label="Cancel invite", style=discord.ButtonStyle.secondary
+        )
+        self.cancel_invite_button.callback = self._on_cancel_invite  # type: ignore[assignment]
+        self.add_item(self.cancel_invite_button)
+
         if self.allow_force_add:
             self.force_add_button = discord.ui.Button(label="Add player", style=discord.ButtonStyle.primary)
             self.force_add_button.callback = self._on_force_add  # type: ignore[assignment]
@@ -407,6 +422,12 @@ class ManageTeamView(discord.ui.View):
             self.invite_button.disabled = not allowed
             self.invite_button.style = (
                 discord.ButtonStyle.green if allowed else discord.ButtonStyle.gray
+            )
+        if hasattr(self, "cancel_invite_button"):
+            has_invites = bool(self.team.invites)
+            self.cancel_invite_button.disabled = not has_invites
+            self.cancel_invite_button.style = (
+                discord.ButtonStyle.secondary if has_invites else discord.ButtonStyle.gray
             )
         if getattr(self, "allow_force_add", False) and hasattr(self, "force_add_button"):
             self.force_add_button.disabled = roster_full
@@ -481,22 +502,70 @@ class ManageTeamView(discord.ui.View):
             )
 
             try:
+                await select_interaction.response.defer(ephemeral=True, thinking=True)
                 await member.send(embed=embed, view=invite_view)
             except discord.Forbidden:
                 self.manager.remove_invite(self.team, member.id)
-                await select_interaction.response.send_message(
-                    f"Couldn't DM {member.mention}. They may have DMs disabled.", ephemeral=True
+                await _reply_ephemeral(
+                    select_interaction,
+                    f"Couldn't DM {member.mention}. They may have DMs disabled.",
                 )
                 return
 
-            await select_interaction.response.send_message(
+            await _reply_ephemeral(
+                select_interaction,
                 f"Sent an invite to {member.mention}. They'll receive a DM to accept or decline.",
-                ephemeral=True,
             )
             await self._refresh_message()
 
         view.add_item(InviteUserSelect(handle_select))
         await interaction.response.send_message("Search for a player to invite:", view=view, ephemeral=True)
+
+    async def _on_cancel_invite(self, interaction: discord.Interaction) -> None:
+        if not self.team.invites:
+            await _reply_ephemeral(interaction, "You have no pending invites to cancel.")
+            return
+
+        view = discord.ui.View()
+
+        async def handle_cancel(select_interaction: discord.Interaction, member_id: int) -> None:
+            if not select_interaction.response.is_done():
+                await select_interaction.response.defer(ephemeral=True, thinking=True)
+            member = await self._ensure_member(member_id)
+            self.manager.remove_invite(self.team, member_id)
+
+            if member:
+                try:
+                    await member.send(
+                        f"Your invite to **{self.team.name}** has been cancelled."
+                    )
+                except discord.Forbidden:
+                    pass
+
+            await _reply_ephemeral(
+                select_interaction,
+                f"Cancelled the invite for {member.mention if member else f'<@{member_id}>'}.",
+            )
+            await self._refresh_message()
+
+        options: List[discord.SelectOption] = []
+        for user_id in self.team.invites:
+            member = self.guild.get_member(user_id)
+            label = member.display_name if member else f"User {user_id}"
+            options.append(discord.SelectOption(label=label, value=str(user_id)))
+
+        class CancelInviteSelect(discord.ui.Select):
+            def __init__(self, options: List[discord.SelectOption]):
+                super().__init__(placeholder="Select invite to cancel", options=options)
+
+            async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+                member_id = int(self.values[0])
+                await handle_cancel(interaction, member_id)
+
+        view.add_item(CancelInviteSelect(options))
+        await interaction.response.send_message(
+            "Choose an invite to cancel:", view=view, ephemeral=True
+        )
 
     async def _on_force_add(self, interaction: discord.Interaction) -> None:
         if self.manager.is_roster_full(self.team):

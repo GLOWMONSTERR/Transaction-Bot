@@ -102,6 +102,33 @@ The checklist below walks through everything from installing VS Code to seeing t
 
 Once the bot is online, it will automatically register slash commands (instantly if `GUILD_ID` is set). Team and invite data are saved in `data/teams.json`, so you can stop and restart the bot without losing progress.
 
+## Fast restart when you update your server
+
+Need to pull new code or tweak settings on your DigitalOcean droplet (or any Linux server)?
+
+1. SSH into the machine and go to the project folder, for example:
+   ```bash
+   cd ~/projects/Transaction-Bot
+   ```
+2. Activate your virtual environment (create it first if it is missing):
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
+3. Pull updates and install any new dependencies:
+   ```bash
+   git pull
+   pip install -r requirements.txt
+   ```
+4. Restart the running bot process:
+   * If you launched it in a `tmux`/`screen` session, reattach and press `Ctrl+C`, then run `python -m bot.bot` again.
+   * If you set up a `systemd` service (common on droplets), restart it with:
+     ```bash
+     sudo systemctl restart transaction-bot.service
+     ```
+
+The bot will reconnect and re-sync slash commands automatically after the restart.
+
 ### Built-in keep-alive web page
 
 The bot now spins up a tiny web server alongside Discord.
