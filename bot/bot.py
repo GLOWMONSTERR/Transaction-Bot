@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, List, Optional
 
 import discord
 from discord import app_commands
-from discord.ext import commands
+from discord.ext import commands, tasks
 from aiohttp import web
 
 from .config import BotConfig
+from .match_manager import MatchManager
 from .team_manager import Team, TeamManager
 from .views import (
     ConfirmView,
@@ -30,12 +32,13 @@ logging.basicConfig(level=logging.INFO)
 class LeagueBot(commands.Bot):
     """Custom bot implementation that wires together commands and persistence."""
 
-    def __init__(self, *, config: BotConfig, data_path: Path) -> None:
+    def __init__(self, *, config: BotConfig, data_path: Path, match_path: Path) -> None:
         intents = discord.Intents.default()
         intents.members = True
         super().__init__(command_prefix=commands.when_mentioned, intents=intents, help_command=None)
         self.config = config
         self.team_manager = TeamManager(data_path)
+        self.match_manager = MatchManager(match_path)
         self._web_runner: Optional[web.AppRunner] = None
         self._web_site: Optional[web.TCPSite] = None
 
@@ -121,6 +124,10 @@ class LeagueCommands(commands.Cog):
 
     def __init__(self, bot: LeagueBot) -> None:
         self.bot = bot
+        self._reminder_loop.start()
+
+    def cog_unload(self) -> None:
+        self._reminder_loop.cancel()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -148,6 +155,12 @@ class LeagueCommands(commands.Cog):
     def _team_colour(self, team: Team) -> discord.Colour:
         return discord.Colour(int(team.hex_color.lstrip("#"), 16))
 
+    def _match_category(self, guild: discord.Guild) -> Optional[discord.CategoryChannel]:
+        if not self.bot.config.match_category_id:
+            return None
+        channel = guild.get_channel(self.bot.config.match_category_id)
+        return channel if isinstance(channel, discord.CategoryChannel) else None
+
     def _require_admin(self, interaction: discord.Interaction) -> bool:
         member = interaction.user
         if isinstance(member, discord.Member):
@@ -161,6 +174,39 @@ class LeagueCommands(commands.Cog):
                     return True
 
         return False
+
+    async def _post_results(
+        self,
+        guild: discord.Guild,
+        *,
+        winner: str,
+        loser: str,
+        rounds: List[str],
+    ) -> None:
+        channel_id = self.bot.config.match_results_channel_id
+        if not channel_id:
+            return
+
+        channel = guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            try:
+                fetched = await guild.fetch_channel(channel_id)
+            except (discord.Forbidden, discord.HTTPException):
+                return
+            if not isinstance(fetched, discord.TextChannel):
+                return
+            channel = fetched
+
+        lines = [f"**{winner}** has beaten **{loser}**"]
+        for idx in range(5):
+            label = f"R{idx + 1}:"
+            value = rounds[idx] if idx < len(rounds) else ""
+            lines.append(f"{label} {value}".rstrip())
+
+        try:
+            await channel.send("\n".join(lines))
+        except discord.HTTPException:
+            return
 
     # ------------------------------------------------------------------
     # Slash commands
@@ -363,6 +409,16 @@ class LeagueCommands(commands.Cog):
                 choices.append(app_commands.Choice(name=team.name, value=team.name))
         return choices[:25]
 
+    def _week_window(self, now: Optional[datetime] = None) -> tuple[datetime, datetime, datetime, int]:
+        """Return (start_of_week, due_at, reminder_at, week_number)."""
+
+        now = now or datetime.utcnow()
+        start = datetime.combine((now - timedelta(days=now.weekday())).date(), datetime.min.time())
+        due = start + timedelta(days=7)
+        reminder = start + timedelta(days=3, hours=12)
+        week_number = int(((start - datetime(start.year, 1, 1)).days // 7) + 1)
+        return start, due, reminder, week_number
+
     @app_commands.command(name="admin-edit", description="Admin: edit a team's settings")
     @app_commands.describe(
         team_name="Team to edit",
@@ -426,6 +482,101 @@ class LeagueCommands(commands.Cog):
                 await new_captain.add_roles(member_role, reason="Joined team roster")
 
         await self._send_ephemeral(interaction, "Team updated successfully.")
+
+    # ------------------------------------------------------------------
+    @app_commands.command(name="admin-create-match", description="Admin: create a weekly match channel for two teams")
+    @app_commands.autocomplete(team_one=_team_autocomplete, team_two=_team_autocomplete)
+    @app_commands.describe(
+        team_one="Home team",
+        team_two="Away team",
+        week="Week number (defaults to current week)",
+    )
+    async def admin_create_match(
+        self,
+        interaction: discord.Interaction,
+        team_one: str,
+        team_two: str,
+        week: Optional[int] = None,
+    ) -> None:
+        if not self._require_admin(interaction):
+            await self._send_ephemeral(interaction, "Administrator permissions are required.")
+            return
+
+        guild = interaction.guild
+        if guild is None:
+            await self._send_ephemeral(interaction, "This command can only be used inside a server.")
+            return
+
+        if team_one.lower() == team_two.lower():
+            await self._send_ephemeral(interaction, "Pick two different teams for a match.")
+            return
+
+        category = self._match_category(guild)
+        if not category:
+            await self._send_ephemeral(interaction, "Set MATCH_CATEGORY_ID to a valid category before making matches.")
+            return
+
+        team_one_obj = self.bot.team_manager.get_team(team_one)
+        team_two_obj = self.bot.team_manager.get_team(team_two)
+        if not team_one_obj or not team_two_obj:
+            await self._send_ephemeral(interaction, "Both teams must exist before scheduling a match.")
+            return
+
+        _, due_at, _, default_week = self._week_window()
+        week_number = week or default_week
+
+        channel_name = f"{team_one_obj.name.lower().replace(' ', '-')}-vs-{team_two_obj.name.lower().replace(' ', '-')}"
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(view_channel=False),
+            guild.me: discord.PermissionOverwrite(view_channel=True, send_messages=True, manage_channels=True),
+        }
+        for team in (team_one_obj, team_two_obj):
+            role = guild.get_role(team.role_id)
+            if role:
+                overwrites[role] = discord.PermissionOverwrite(view_channel=True, send_messages=True)
+
+        channel = await guild.create_text_channel(
+            name=channel_name,
+            category=category,
+            overwrites=overwrites,
+            reason="New league match",
+            topic=f"Week {week_number} match due by {due_at.date().isoformat()}",
+        )
+
+        match = self.bot.match_manager.create_match(
+            team_one=team_one_obj.name,
+            team_two=team_two_obj.name,
+            channel_id=channel.id,
+            due_at=due_at,
+            week=week_number,
+        )
+
+        from .views import MatchControlView  # local import to avoid cycles
+
+        view = MatchControlView(
+            match=match,
+            manager=self.bot.match_manager,
+            team_manager=self.bot.team_manager,
+            bot=self.bot,
+            post_results=self._post_results,
+        )
+
+        due_ts = int(due_at.timestamp())
+        staff_pings = []
+        for role_id in (self.bot.config.caster_role_id, self.bot.config.ref_role_id, self.bot.config.mod_role_id):
+            role = guild.get_role(role_id) if role_id else None
+            if role:
+                staff_pings.append(role.mention)
+        staff_line = f" {' '.join(staff_pings)}" if staff_pings else ""
+
+        await channel.send(
+            content=(
+                f"Week {week_number} match created for **{team_one_obj.name}** vs **{team_two_obj.name}**.\n"
+                f"Matches run Monday to Monday. Due by <t:{due_ts}:F>. Mid-week reminders go out automatically.{staff_line}"
+            ),
+            view=view,
+        )
+        await self._send_ephemeral(interaction, f"Match channel created: {channel.mention}")
 
     # ------------------------------------------------------------------
     @app_commands.command(name="admin-manage", description="Admin: manage any team")
@@ -585,13 +736,60 @@ class LeagueCommands(commands.Cog):
 
         await interaction.followup.send(summary, ephemeral=True)
 
+    # ------------------------------------------------------------------
+    @tasks.loop(minutes=30)
+    async def _reminder_loop(self) -> None:
+        await self.bot.wait_until_ready()
+        now = datetime.utcnow()
+
+        for match in self.bot.match_manager.open_matches():
+            due_at = match.due_datetime()
+            reminder_at = due_at - timedelta(days=3, hours=12)
+
+            channel = self.bot.get_channel(match.channel_id)
+            if not isinstance(channel, discord.TextChannel):
+                continue
+
+            guild = channel.guild
+            team_one = self.bot.team_manager.get_team(match.team_one)
+            team_two = self.bot.team_manager.get_team(match.team_two)
+            team_one_ping = guild.get_role(team_one.role_id).mention if team_one and guild.get_role(team_one.role_id) else match.team_one
+            team_two_ping = guild.get_role(team_two.role_id).mention if team_two and guild.get_role(team_two.role_id) else match.team_two
+
+            if not match.reminder_sent and now >= reminder_at and now < due_at:
+                await channel.send(
+                    f"Mid-week reminder: {team_one_ping} vs {team_two_ping} is due by <t:{int(due_at.timestamp())}:F>."
+                )
+                self.bot.match_manager.mark_reminded(match)
+
+            if now >= due_at:
+                self.bot.match_manager.mark_overdue(match)
+                new_name = channel.name
+                if not channel.name.startswith("⚠️"):
+                    new_name = f"⚠️{channel.name}"
+                    try:
+                        await channel.edit(name=new_name)
+                    except discord.HTTPException:
+                        pass
+
+                mod_ping = None
+                if self.bot.config.mod_role_id:
+                    role = guild.get_role(self.bot.config.mod_role_id)
+                    if role:
+                        mod_ping = role.mention
+                ping = f" {mod_ping}" if mod_ping else ""
+                await channel.send(
+                    f"No score was reported before the weekly deadline. {team_one_ping} vs {team_two_ping}{ping}"
+                )
+
 
 def run_bot() -> None:
     """Load configuration and start the Discord bot."""
 
     config = BotConfig.from_env()
     data_path = Path("data/teams.json")
-    bot = LeagueBot(config=config, data_path=data_path)
+    match_path = Path("data/matches.json")
+    bot = LeagueBot(config=config, data_path=data_path, match_path=match_path)
     bot.run(config.token)
 
 

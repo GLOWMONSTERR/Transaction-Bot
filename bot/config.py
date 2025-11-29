@@ -51,6 +51,11 @@ class BotConfig:
     co_captain_role_id: Optional[int]
     team_member_role_id: Optional[int]
     transactions_channel_id: Optional[int]
+    match_category_id: Optional[int]
+    match_results_channel_id: Optional[int]
+    caster_role_id: Optional[int]
+    ref_role_id: Optional[int]
+    mod_role_id: Optional[int]
     admin_role_ids: Tuple[int, ...]
     web_host: Optional[str]
     web_port: Optional[int]
@@ -68,6 +73,11 @@ class BotConfig:
             co_captain_role_id=_get_int("CO_CAPTAIN_ROLE_ID"),
             team_member_role_id=_get_int("TEAM_MEMBER_ROLE_ID"),
             transactions_channel_id=_get_int("TRANSACTIONS_CHANNEL_ID"),
+            match_category_id=_get_int("MATCH_CATEGORY_ID"),
+            match_results_channel_id=_get_int("MATCH_RESULTS_CHANNEL_ID"),
+            caster_role_id=_get_int("CASTER_ROLE_ID"),
+            ref_role_id=_get_int("REF_ROLE_ID"),
+            mod_role_id=_get_int("MOD_ROLE_ID"),
             admin_role_ids=_get_int_list("ADMIN_ROLE_IDS"),
             web_host=os.getenv("WEB_HOST"),
             web_port=_get_int("WEB_PORT"),

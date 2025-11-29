@@ -10,18 +10,21 @@ A Discord bot built with [`discord.py`](https://discordpy.readthedocs.io/en/stab
 - Optional transaction feed posts simple text updates whenever teams are created, captains change, players join/leave, or other roster actions occur.
 - `/leave` lets non-captain members leave their team after confirmation.
 - `/admin-edit`, `/admin-manage`, `/admin-lock`, and `/admin-disband-all` offer complete administrative control, including roster locks, forced additions, and mass disbands.
+- `/admin-create-match` spins up weekly match channels inside a category you choose, invites staff to self-assign (caster/ref/mod) via buttons, schedules mid-week reminders, and locks channels + posts the result summary when scores are reported (first to 5, with round-by-round notes).
 
 ## Project layout
 
 ```
 ├── bot/
 │   ├── __init__.py
-│   ├── bot.py          # Bot entry point and slash command definitions
-│   ├── config.py       # Environment-variable driven configuration loader
-│   ├── team_manager.py # JSON persistence for teams/invites
-│   └── views.py        # Discord UI views (buttons, selects, embeds)
+│   ├── bot.py            # Bot entry point and slash command definitions
+│   ├── config.py         # Environment-variable driven configuration loader
+│   ├── team_manager.py   # JSON persistence for teams/invites
+│   ├── match_manager.py  # JSON persistence for scheduled matches
+│   └── views.py          # Discord UI views (buttons, selects, embeds)
 ├── data/
-│   └── teams.json      # Persisted team roster data
+│   ├── teams.json        # Persisted team roster data
+│   └── matches.json      # Persisted match schedule data
 ├── requirements.txt    # Python dependencies
 └── .env.example        # Template for runtime configuration
 ```
@@ -87,6 +90,9 @@ The checklist below walks through everything from installing VS Code to seeing t
      - `TEAM_MEMBER_ROLE_ID` (optional): a general member role that everyone on a team should receive.
      - `TRANSACTIONS_CHANNEL_ID` (optional): a text channel ID where the bot will post roster changes, team creations, and other updates.
      - `ADMIN_ROLE_IDS` (optional): a comma-separated list (up to three) of role IDs (for example `123,456`) whose members should be treated as bot admins even if they don't have the Discord-wide Administrator permission.
+     - `CASTER_ROLE_ID` / `REF_ROLE_ID` / `MOD_ROLE_ID` (optional): staff roles to ping and optionally grant when someone volunteers on a match channel.
+     - `MATCH_CATEGORY_ID`: the category where weekly match channels will be created (required for `/admin-create-match`).
+     - `MATCH_RESULTS_CHANNEL_ID` (optional): text channel where final results get posted in the requested format once scores are submitted.
      - `WEB_HOST` / `WEB_PORT` (optional): override the mini status site's bind address (defaults to `0.0.0.0:8080`). Leave these blank to accept the defaults on free hosting providers.
 
 6. **Run and debug the bot**
@@ -101,6 +107,15 @@ The checklist below walks through everything from installing VS Code to seeing t
    - Approve the permissions (role management and member viewing) so slash commands can function.
 
 Once the bot is online, it will automatically register slash commands (instantly if `GUILD_ID` is set). Team and invite data are saved in `data/teams.json`, so you can stop and restart the bot without losing progress.
+
+## Weekly matches with `/admin-create-match`
+
+- **Setup**: populate `MATCH_CATEGORY_ID` with the category you want match channels to live in. Point `MATCH_RESULTS_CHANNEL_ID` at the channel where you want the final score summary to post. Add `CASTER_ROLE_ID`, `REF_ROLE_ID`, and `MOD_ROLE_ID` so staff can self-assign and get pinged.
+- **Create**: run `/admin-create-match` and pick two different teams. The bot will open a channel named `[team1]-vs-[team2]` inside the configured category and pre-permission it for both team roles.
+- **Reminders**: every match is treated as running Monday → Monday. The bot sends a mid-week reminder automatically and, if no scores are submitted by the deadline, renames the channel with a warning emoji and pings mods.
+- **Staff joins**: casters, refs, and mods can press the buttons in the match channel to gain access (the bot will also try to assign the matching role if configured).
+- **Score reporting**: hit **Submit Score** in the match channel, enter the first-to-5 scoreline, and add up to five round notes (`R1` … `R5`). The bot locks the channel, posts the exact template you requested to the results channel, and logs the win in the transaction feed.
+- **Season flow**: the first six weeks are intended for seeding; after that, move the top 18 teams into a new Challonge bracket. Use `/admin-create-match` to generate fresh channels for each bracket pairing.
 
 ## Fast restart when you update your server
 

@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, List, Optional
 
 import discord
 
+from .match_manager import Match, MatchManager
 from .team_manager import Team, TeamManager
 
 if TYPE_CHECKING:  # pragma: no cover - imported for type checking only
@@ -863,3 +864,181 @@ class RosterLookupView(discord.ui.View):
             await self.interaction.edit_original_response(view=self)
         except discord.HTTPException:
             pass
+
+
+class ScoreReportModal(discord.ui.Modal, title="Submit match score"):
+    def __init__(
+        self,
+        *,
+        match: Match,
+        on_submit_scores: Callable[[discord.Interaction, int, int, List[str]], Awaitable[None]],
+    ) -> None:
+        super().__init__(timeout=600)
+        self.match = match
+        self._on_submit_scores = on_submit_scores
+
+        self.team_one_score: discord.ui.TextInput = discord.ui.TextInput(
+            label=f"{match.team_one} score (0-5)",
+            min_length=1,
+            max_length=1,
+            placeholder="5",
+        )
+        self.team_two_score: discord.ui.TextInput = discord.ui.TextInput(
+            label=f"{match.team_two} score (0-5)",
+            min_length=1,
+            max_length=1,
+            placeholder="3",
+        )
+        self.round_one: discord.ui.TextInput = discord.ui.TextInput(label="R1", required=False, max_length=50)
+        self.round_two: discord.ui.TextInput = discord.ui.TextInput(label="R2", required=False, max_length=50)
+        self.round_three: discord.ui.TextInput = discord.ui.TextInput(label="R3", required=False, max_length=50)
+        self.round_four: discord.ui.TextInput = discord.ui.TextInput(label="R4", required=False, max_length=50)
+        self.round_five: discord.ui.TextInput = discord.ui.TextInput(label="R5", required=False, max_length=50)
+
+        for component in (
+            self.team_one_score,
+            self.team_two_score,
+            self.round_one,
+            self.round_two,
+            self.round_three,
+            self.round_four,
+            self.round_five,
+        ):
+            self.add_item(component)
+
+    async def on_submit(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+        try:
+            team_one_score = int(str(self.team_one_score.value))
+            team_two_score = int(str(self.team_two_score.value))
+        except ValueError:
+            await _reply_ephemeral(interaction, "Scores must be numbers between 0 and 5.")
+            return
+
+        if max(team_one_score, team_two_score) != 5 or team_one_score == team_two_score:
+            await _reply_ephemeral(interaction, "First to 5 only: one side must reach 5 and they cannot tie.")
+            return
+
+        rounds = [
+            str(field.value) for field in (self.round_one, self.round_two, self.round_three, self.round_four, self.round_five)
+            if str(field.value).strip()
+        ]
+
+        await self._on_submit_scores(interaction, team_one_score, team_two_score, rounds)
+
+
+class MatchControlView(discord.ui.View):
+    """Controls for staff and captains inside a match channel."""
+
+    def __init__(
+        self,
+        *,
+        match: Match,
+        manager: MatchManager,
+        team_manager: TeamManager,
+        bot: "LeagueBot",
+        post_results: Callable[[discord.Guild, str, str, List[str]], Awaitable[None]],
+    ) -> None:
+        super().__init__(timeout=7 * 24 * 60 * 60)
+        self.match = match
+        self.manager = manager
+        self.team_manager = team_manager
+        self.bot = bot
+        self.post_results = post_results
+
+    # ------------------------------------------------------------------
+    async def _grant_access(
+        self,
+        interaction: discord.Interaction,
+        label: str,
+        *,
+        role_id: Optional[int],
+    ) -> None:
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            await _reply_ephemeral(interaction, "This can only be used inside a match channel.")
+            return
+
+        try:
+            await channel.set_permissions(
+                interaction.user,
+                view_channel=True,
+                send_messages=True,
+            )
+        except discord.HTTPException:
+            await _reply_ephemeral(interaction, "I couldn't update channel permissions.")
+            return
+
+        note = ""
+        if role_id:
+            role = channel.guild.get_role(role_id)
+            if role and isinstance(interaction.user, discord.Member) and role not in interaction.user.roles:
+                try:
+                    await interaction.user.add_roles(role, reason=f"Joined match as {label}")
+                except discord.Forbidden:
+                    note = " (couldn't add role; check my permissions)"
+                except discord.HTTPException:
+                    note = " (role add failed)"
+
+        await _reply_ephemeral(interaction, f"Added you to this match channel as {label}.{note}")
+        await channel.send(f"{interaction.user.mention} is covering this match as {label}.")
+
+    async def _handle_scores(
+        self,
+        interaction: discord.Interaction,
+        team_one_score: int,
+        team_two_score: int,
+        rounds: List[str],
+    ) -> None:
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            await _reply_ephemeral(interaction, "Scores must be submitted inside the match channel.")
+            return
+
+        match = self.manager.find_by_channel(channel.id)
+        if not match or match.status != "open":
+            await _reply_ephemeral(interaction, "This match is already closed or missing.")
+            return
+
+        scores = {
+            match.team_one: team_one_score,
+            match.team_two: team_two_score,
+        }
+        winner = match.team_one if team_one_score > team_two_score else match.team_two
+        loser = match.team_two if winner == match.team_one else match.team_one
+
+        self.manager.mark_completed(match, scores=scores, rounds=rounds)
+
+        try:
+            await channel.set_permissions(channel.guild.default_role, send_messages=False)
+            for team in (
+                self.team_manager.get_team(match.team_one),
+                self.team_manager.get_team(match.team_two),
+            ):
+                if team:
+                    role = channel.guild.get_role(team.role_id)
+                    if role:
+                        await channel.set_permissions(role, send_messages=False)
+        except discord.HTTPException:
+            pass
+
+        await self.post_results(channel.guild, winner=winner, loser=loser, rounds=rounds)
+        await _reply_ephemeral(interaction, "Scores submitted. Channel locked and results posted.")
+        await self.bot.log_event(channel.guild, f"{winner} defeated {loser} (scores submitted).")
+
+    # ------------------------------------------------------------------
+    @discord.ui.button(label="Join as Caster", style=discord.ButtonStyle.primary)
+    async def join_caster(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._grant_access(interaction, "caster", role_id=getattr(self.bot.config, "caster_role_id", None))
+
+    @discord.ui.button(label="Join as Ref", style=discord.ButtonStyle.primary)
+    async def join_ref(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._grant_access(interaction, "ref", role_id=getattr(self.bot.config, "ref_role_id", None))
+
+    @discord.ui.button(label="Join as Mod", style=discord.ButtonStyle.secondary)
+    async def join_mod(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._grant_access(interaction, "mod", role_id=getattr(self.bot.config, "mod_role_id", None))
+
+    @discord.ui.button(label="Submit Score", style=discord.ButtonStyle.success)
+    async def submit_score(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        modal = ScoreReportModal(match=self.match, on_submit_scores=self._handle_scores)
+        await interaction.response.send_modal(modal)
