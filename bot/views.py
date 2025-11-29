@@ -945,43 +945,6 @@ class MatchControlView(discord.ui.View):
         self.bot = bot
         self.post_results = post_results
 
-    # ------------------------------------------------------------------
-    async def _grant_access(
-        self,
-        interaction: discord.Interaction,
-        label: str,
-        *,
-        role_id: Optional[int],
-    ) -> None:
-        channel = interaction.channel
-        if not isinstance(channel, discord.TextChannel):
-            await _reply_ephemeral(interaction, "This can only be used inside a match channel.")
-            return
-
-        try:
-            await channel.set_permissions(
-                interaction.user,
-                view_channel=True,
-                send_messages=True,
-            )
-        except discord.HTTPException:
-            await _reply_ephemeral(interaction, "I couldn't update channel permissions.")
-            return
-
-        note = ""
-        if role_id:
-            role = channel.guild.get_role(role_id)
-            if role and isinstance(interaction.user, discord.Member) and role not in interaction.user.roles:
-                try:
-                    await interaction.user.add_roles(role, reason=f"Joined match as {label}")
-                except discord.Forbidden:
-                    note = " (couldn't add role; check my permissions)"
-                except discord.HTTPException:
-                    note = " (role add failed)"
-
-        await _reply_ephemeral(interaction, f"Added you to this match channel as {label}.{note}")
-        await channel.send(f"{interaction.user.mention} is covering this match as {label}.")
-
     async def _handle_scores(
         self,
         interaction: discord.Interaction,
@@ -1026,18 +989,105 @@ class MatchControlView(discord.ui.View):
         await self.bot.log_event(channel.guild, f"{winner} defeated {loser} (scores submitted).")
 
     # ------------------------------------------------------------------
-    @discord.ui.button(label="Join as Caster", style=discord.ButtonStyle.primary)
-    async def join_caster(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self._grant_access(interaction, "caster", role_id=getattr(self.bot.config, "caster_role_id", None))
-
-    @discord.ui.button(label="Join as Ref", style=discord.ButtonStyle.primary)
-    async def join_ref(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self._grant_access(interaction, "ref", role_id=getattr(self.bot.config, "ref_role_id", None))
-
-    @discord.ui.button(label="Join as Mod", style=discord.ButtonStyle.secondary)
-    async def join_mod(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self._grant_access(interaction, "mod", role_id=getattr(self.bot.config, "mod_role_id", None))
-
     @discord.ui.button(label="Use /submit-scores", style=discord.ButtonStyle.secondary, disabled=True)
     async def submit_score(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await _reply_ephemeral(interaction, "Use /submit-scores in this channel to report results.")
+
+
+class AssignmentSignupView(discord.ui.View):
+    """Lets staff claim a match from the assignments channel."""
+
+    def __init__(
+        self,
+        *,
+        match: Match,
+        manager: MatchManager,
+        bot: "LeagueBot",
+        match_channel_id: int,
+    ) -> None:
+        super().__init__(timeout=7 * 24 * 60 * 60)
+        self.match_id = match.id
+        self.match_channel_id = match_channel_id
+        self.manager = manager
+        self.bot = bot
+
+    async def _claim(
+        self,
+        interaction: discord.Interaction,
+        label: str,
+        *,
+        role_id: Optional[int],
+        announce: bool,
+    ) -> None:
+        guild = interaction.guild
+        if guild is None:
+            await _reply_ephemeral(interaction, "Use this inside the assignments channel.")
+            return
+
+        channel = guild.get_channel(self.match_channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            try:
+                fetched = await guild.fetch_channel(self.match_channel_id)
+            except (discord.Forbidden, discord.HTTPException):
+                await _reply_ephemeral(interaction, "Match channel is missing.")
+                return
+            if not isinstance(fetched, discord.TextChannel):
+                await _reply_ephemeral(interaction, "Match channel is missing.")
+                return
+            channel = fetched
+
+        try:
+            await channel.set_permissions(
+                interaction.user,
+                view_channel=True,
+                send_messages=True,
+            )
+        except discord.HTTPException:
+            await _reply_ephemeral(interaction, "I couldn't update match channel permissions.")
+            return
+
+        note = ""
+        if role_id and isinstance(interaction.user, discord.Member):
+            role = guild.get_role(role_id)
+            if role and role not in interaction.user.roles:
+                try:
+                    await interaction.user.add_roles(role, reason=f"Assigned as {label}")
+                except discord.Forbidden:
+                    note = " (role add blocked; check my permissions)"
+                except discord.HTTPException:
+                    note = " (role add failed)"
+
+        if announce:
+            try:
+                await channel.send(f"{interaction.user.mention} has been assigned to {label} this match.")
+            except discord.HTTPException:
+                note = f"{note} (couldn't post assignment in match channel)"
+
+        await _reply_ephemeral(interaction, f"Added you to {channel.mention} as {label}.{note}")
+
+    @discord.ui.button(label="Claim as Caster", style=discord.ButtonStyle.primary)
+    async def claim_caster(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._claim(
+            interaction,
+            "cast",
+            role_id=getattr(self.bot.config, "caster_role_id", None),
+            announce=True,
+        )
+
+    @discord.ui.button(label="Claim as Ref", style=discord.ButtonStyle.primary)
+    async def claim_ref(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._claim(
+            interaction,
+            "referee",
+            role_id=getattr(self.bot.config, "ref_role_id", None),
+            announce=True,
+        )
+
+    @discord.ui.button(label="Claim as Mod", style=discord.ButtonStyle.secondary)
+    async def claim_mod(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._claim(
+            interaction,
+            "moderate",
+            role_id=getattr(self.bot.config, "mod_role_id", None),
+            announce=False,
+        )

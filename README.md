@@ -10,7 +10,7 @@ A Discord bot built with [`discord.py`](https://discordpy.readthedocs.io/en/stab
 - Optional transaction feed posts simple text updates whenever teams are created, captains change, players join/leave, or other roster actions occur.
 - `/leave` lets non-captain members leave their team after confirmation.
 - `/admin-edit`, `/admin-manage`, `/admin-lock`, and `/admin-disband-all` offer complete administrative control, including roster locks, forced additions, and mass disbands.
-- `/admin-create-match` spins up weekly match channels inside a category you choose, invites staff to self-assign (caster/ref/mod) via buttons, schedules mid-week reminders, and locks channels + posts the result summary when scores are reported (first to 5, with round-by-round notes).
+- `/admin-create-match` spins up weekly match channels inside a category you choose, walks captains through confirming a time, posts to an assignments channel so casters/refs/mods can claim coverage, schedules mid-week reminders, and locks channels + posts the result summary when scores are reported (first to 5, with round-by-round notes).
 - `/submit-scores` lets captains and co-captains report first-to-5 results with up to three attempts to agree; mismatches ping both teams (and mods on the last try), lock the channel on success, and optionally push the result to Challonge.
 
 ## Project layout
@@ -94,7 +94,7 @@ The checklist below walks through everything from installing VS Code to seeing t
      - `CASTER_ROLE_ID` / `REF_ROLE_ID` / `MOD_ROLE_ID` (optional): staff roles to ping and optionally grant when someone volunteers on a match channel.
      - `MATCH_CATEGORY_ID`: the category where weekly match channels will be created (required for `/admin-create-match`).
      - `MATCH_RESULTS_CHANNEL_ID` (optional): text channel where final results get posted in the requested format once scores are submitted.
-     - `MATCH_STAFF_ALERT_CHANNEL_ID` (optional): a text channel where the bot will ping casters/refs/mods whenever a new match channel is created.
+    - `MATCH_STAFF_ALERT_CHANNEL_ID` (optional): your **assignments channel**. When both captains confirm a match time, the bot posts here with buttons for casters/refs/mods to claim the match.
      - `WEB_HOST` / `WEB_PORT` (optional): override the mini status site's bind address (defaults to `0.0.0.0:8080`). Leave these blank to accept the defaults on free hosting providers.
      - `CHALLONGE_USERNAME` / `CHALLONGE_API_KEY` / `CHALLONGE_TOURNAMENT` (optional): fill these in to push final scores to your Challonge bracket (for example, the slug from https://challonge.com/y9wsh6ak).
 
@@ -113,12 +113,18 @@ Once the bot is online, it will automatically register slash commands (instantly
 
 ## Weekly matches with `/admin-create-match`
 
-- **Setup**: populate `MATCH_CATEGORY_ID` with the category you want match channels to live in. Point `MATCH_RESULTS_CHANNEL_ID` at the channel where you want the final score summary to post. Add `CASTER_ROLE_ID`, `REF_ROLE_ID`, `MOD_ROLE_ID`, and (optionally) `MATCH_STAFF_ALERT_CHANNEL_ID` so staff get pinged in a central place when new match channels appear. Fill in `CHALLONGE_USERNAME` / `CHALLONGE_API_KEY` / `CHALLONGE_TOURNAMENT` if you want results pushed to your Challonge bracket.
-- **Create**: run `/admin-create-match` and pick two different teams. The bot will open a channel named `[team1]-vs-[team2]` inside the configured category, pre-permission it for both team roles, and ping staff in the alert channel if one is configured.
+- **Setup**: populate `MATCH_CATEGORY_ID` with the category you want match channels to live in. Point `MATCH_RESULTS_CHANNEL_ID` at the channel where you want the final score summary to post. Add `CASTER_ROLE_ID`, `REF_ROLE_ID`, `MOD_ROLE_ID`, and (optionally) `MATCH_STAFF_ALERT_CHANNEL_ID` (the assignments channel) so staff can claim matches once times are confirmed. Fill in `CHALLONGE_USERNAME` / `CHALLONGE_API_KEY` / `CHALLONGE_TOURNAMENT` if you want results pushed to your Challonge bracket.
+- **Create**: run `/admin-create-match` and pick two different teams. The bot will open a channel named `[team1]-vs-[team2]` inside the configured category, pre-permission it for both team roles, and instruct captains to confirm a time.
+- **Confirm & assignments**: both captains (or co-caps) run `/confirm-match-time` in the match channel with the agreed time. When both sides enter the same value, the bot posts to the assignments channel with **Claim as Caster/Ref/Mod** buttons; caster/ref claims announce back in the match channel.
 - **Reminders**: every match is treated as running Monday → Monday. The bot sends a mid-week reminder automatically and, if no scores are submitted by the deadline, renames the channel with a warning emoji and pings mods.
-- **Staff joins**: casters, refs, and mods can press the buttons in the match channel to gain access (the bot will also try to assign the matching role if configured).
 - **Score reporting**: captains or co-captains run `/submit-scores` inside the match channel with the first-to-5 scoreline and optional round notes. Both teams must submit matching scores within three attempts; otherwise the bot pings mods. Successful submissions lock the channel, post the requested template to the results channel, and—when configured—update the Challonge bracket.
 - **Season flow**: the first six weeks are intended for seeding; after that, move the top 18 teams into a new Challonge bracket. Use `/admin-create-match` to generate fresh channels for each bracket pairing.
+
+### Role-by-role flow (quick reference)
+
+- **Admins**: run `/admin-create-match`, verify the match channel landed in the match category, and remind captains to use `/confirm-match-time` inside that channel. If a time needs changing, have captains resubmit until both sides match.
+- **Captains/Co-caps**: in your `[team1]-vs-[team2]` channel, both sides run `/confirm-match-time` with the same string (for example, `Monday 8pm EST`). Wait for the bot to say it posted to the assignments channel. After the match, both sides submit scores with `/submit-scores` until they match.
+- **Casters/Refs/Mods**: watch the assignments channel (set by `MATCH_STAFF_ALERT_CHANNEL_ID`). When a match posts there, click **Claim as Caster/Ref/Mod**. Caster/ref claims announce in the match channel and give you access; mod claims stay quiet but add you to the channel.
 
 ## Fast restart when you update your server
 
@@ -177,7 +183,8 @@ If you change the listening port via `WEB_PORT`, update the URL you monitor acco
 | `/admin-manage` | Admins | Access the management dashboard for any team with invite access even during roster locks and a force-add button for immediate joins (still capped at five players). |
 | `/admin-lock` | Admins | Toggle roster locks to prevent new invites. |
 | `/admin-disband-all` | Admins | Triple-confirm wipe of every team, removing roles, clearing rosters, and deleting persisted data. |
-| `/admin-create-match <team_one> <team_two> [week]` | Admins | Creates a `[team1]-vs-[team2]` channel in your match category, pings staff in the configured alert channel, adds self-assign buttons for casters/refs/mods, and schedules reminders for the Monday→Monday window. |
+| `/admin-create-match <team_one> <team_two> [week]` | Admins | Creates a `[team1]-vs-[team2]` channel in your match category, tells captains to confirm a time, and schedules reminders for the Monday→Monday window. Staff claims happen later in the assignments channel. |
+| `/confirm-match-time <match_time>` | Captains & co-captains | Run inside the match channel. Both teams enter the same time to lock it; once matched, the bot posts to the assignments channel so casters/refs/mods can claim. |
 | `/submit-scores <your_team_score> <opponent_score> [r1…r5]` | Captains & co-captains | Run inside the match channel to post a first-to-5 result. Both teams must submit the same scoreline; mismatches give three total attempts then ping mods. Successful submissions lock the channel, post the template result, and (when configured) update the Challonge bracket. |
 
 > **Who counts as an admin?** Anyone with the Discord “Administrator” server permission _or_ any role ID listed (up to three) in `ADMIN_ROLE_IDS` inside your `.env` file can access the admin-only commands.

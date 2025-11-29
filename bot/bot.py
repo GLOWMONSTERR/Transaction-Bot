@@ -238,6 +238,38 @@ class LeagueCommands(commands.Cog):
         except discord.HTTPException:
             log.warning("Failed to post staff alert")
 
+    async def _post_assignment_request(
+        self,
+        guild: discord.Guild,
+        *,
+        match: "Match",
+        match_channel: discord.TextChannel,
+        scheduled_time: str,
+    ) -> None:
+        channel = await self._staff_alert_channel(guild)
+        if not channel:
+            await match_channel.send(
+                "Assignments channel is not configured. Set MATCH_STAFF_ALERT_CHANNEL_ID so casters/refs can claim matches."
+            )
+            return
+
+        from .views import AssignmentSignupView
+
+        view = AssignmentSignupView(
+            match=match,
+            manager=self.bot.match_manager,
+            bot=self.bot,
+            match_channel_id=match_channel.id,
+        )
+        content = (
+            f"Match scheduled: **{match.team_one}** vs **{match.team_two}** at {scheduled_time}.\n"
+            f"Match channel: {match_channel.mention}. Click below to claim the cast/ref/mod slot."
+        )
+        try:
+            await channel.send(content, view=view)
+        except discord.HTTPException:
+            log.warning("Failed to post assignment request to staff channel")
+
     async def _lock_match_channel(self, channel: discord.TextChannel, match: "Match") -> None:
         try:
             await channel.set_permissions(channel.guild.default_role, send_messages=False)
@@ -688,28 +720,89 @@ class LeagueCommands(commands.Cog):
         )
 
         due_ts = int(due_at.timestamp())
-        staff_pings = []
-        for role_id in (self.bot.config.caster_role_id, self.bot.config.ref_role_id, self.bot.config.mod_role_id):
-            role = guild.get_role(role_id) if role_id else None
-            if role:
-                staff_pings.append(role.mention)
-        staff_line = f" {' '.join(staff_pings)}" if staff_pings else ""
 
         await channel.send(
             content=(
                 f"Week {week_number} match created for **{team_one_obj.name}** vs **{team_two_obj.name}**.\n"
-                f"Matches run Monday to Monday. Due by <t:{due_ts}:F>. Mid-week reminders go out automatically.{staff_line}\n"
+                f"Matches run Monday to Monday. Due by <t:{due_ts}:F>. Mid-week reminders go out automatically.\n"
+                "Both captains: run `/confirm-match-time` in this channel to lock a start time. That post triggers the assignments queue for casters/refs.\n"
                 "Use `/submit-scores` in this channel when the match ends."
             ),
             view=view,
         )
-        if staff_pings:
-            await self._send_staff_alert(
-                guild,
-                f"New match channel {channel.mention} for **{team_one_obj.name}** vs **{team_two_obj.name}**."
-                f" Due by <t:{due_ts}:F>. {staff_line.strip()}",
-            )
         await self._send_ephemeral(interaction, f"Match channel created: {channel.mention}")
+
+    # ------------------------------------------------------------------
+    @app_commands.command(name="confirm-match-time", description="Captains: confirm your match start time")
+    @app_commands.describe(
+        match_time="e.g. Monday 8pm EST",
+    )
+    async def confirm_match_time(
+        self,
+        interaction: discord.Interaction,
+        match_time: str,
+    ) -> None:
+        guild = interaction.guild
+        channel = interaction.channel
+        if guild is None or not isinstance(channel, discord.TextChannel):
+            await self._send_ephemeral(interaction, "Run this inside a match channel.")
+            return
+
+        match = self.bot.match_manager.find_by_channel(channel.id)
+        if not match or match.status != "open":
+            await self._send_ephemeral(interaction, "This channel is not tied to an open match.")
+            return
+
+        team = self.bot.team_manager.find_team_for_member(interaction.user.id)
+        if not team or team.name not in {match.team_one, match.team_two}:
+            await self._send_ephemeral(interaction, "Only captains/co-captains on these teams can confirm.")
+            return
+
+        if match.scheduled_time:
+            await self._send_ephemeral(
+                interaction,
+                f"Match time already locked as `{match.scheduled_time}`.",
+            )
+            return
+
+        is_captain = interaction.user.id == team.captain_id
+        is_co_captain = interaction.user.id in team.co_captains
+        if not (is_captain or is_co_captain):
+            await self._send_ephemeral(interaction, "Only captains and co-captains can confirm the time.")
+            return
+
+        match.time_confirmations[team.name] = match_time.strip()
+        self.bot.match_manager._matches[match.id] = match
+        self.bot.match_manager.save()
+
+        other_team = match.team_two if team.name == match.team_one else match.team_one
+        other_time = match.time_confirmations.get(other_team)
+
+        if not other_time:
+            await self._send_ephemeral(interaction, "Saved your time. Waiting for the other captain to confirm.")
+            return
+
+        if other_time.strip().lower() != match_time.strip().lower():
+            await channel.send(
+                f"Times don't match yet. {team.name} submitted `{match_time}`, {other_team} submitted `{other_time}`. Both captains should resubmit the same time to lock it."
+            )
+            await self._send_ephemeral(interaction, "Time noted. Waiting for both sides to align.")
+            return
+
+        match.scheduled_time = match_time.strip()
+        self.bot.match_manager._matches[match.id] = match
+        self.bot.match_manager.save()
+
+        await channel.send(
+            f"Match time locked: **{match.team_one} vs {match.team_two}** at `{match.scheduled_time}`. Posting to assignments."
+        )
+        await self._post_assignment_request(
+            guild,
+            match=match,
+            match_channel=channel,
+            scheduled_time=match.scheduled_time,
+        )
+        await self._send_ephemeral(interaction, "Confirmed and sent to assignments.")
 
     # ------------------------------------------------------------------
     @app_commands.command(name="submit-scores", description="Submit match scores (captains or co-captains only)")
