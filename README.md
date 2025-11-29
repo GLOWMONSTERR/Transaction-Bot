@@ -11,6 +11,7 @@ A Discord bot built with [`discord.py`](https://discordpy.readthedocs.io/en/stab
 - `/leave` lets non-captain members leave their team after confirmation.
 - `/admin-edit`, `/admin-manage`, `/admin-lock`, and `/admin-disband-all` offer complete administrative control, including roster locks, forced additions, and mass disbands.
 - `/admin-create-match` spins up weekly match channels inside a category you choose, invites staff to self-assign (caster/ref/mod) via buttons, schedules mid-week reminders, and locks channels + posts the result summary when scores are reported (first to 5, with round-by-round notes).
+- `/submit-scores` lets captains and co-captains report first-to-5 results with up to three attempts to agree; mismatches ping both teams (and mods on the last try), lock the channel on success, and optionally push the result to Challonge.
 
 ## Project layout
 
@@ -93,7 +94,9 @@ The checklist below walks through everything from installing VS Code to seeing t
      - `CASTER_ROLE_ID` / `REF_ROLE_ID` / `MOD_ROLE_ID` (optional): staff roles to ping and optionally grant when someone volunteers on a match channel.
      - `MATCH_CATEGORY_ID`: the category where weekly match channels will be created (required for `/admin-create-match`).
      - `MATCH_RESULTS_CHANNEL_ID` (optional): text channel where final results get posted in the requested format once scores are submitted.
+     - `MATCH_STAFF_ALERT_CHANNEL_ID` (optional): a text channel where the bot will ping casters/refs/mods whenever a new match channel is created.
      - `WEB_HOST` / `WEB_PORT` (optional): override the mini status site's bind address (defaults to `0.0.0.0:8080`). Leave these blank to accept the defaults on free hosting providers.
+     - `CHALLONGE_USERNAME` / `CHALLONGE_API_KEY` / `CHALLONGE_TOURNAMENT` (optional): fill these in to push final scores to your Challonge bracket (for example, the slug from https://challonge.com/y9wsh6ak).
 
 6. **Run and debug the bot**
    - Press **F5** or use **Run > Start Debugging**. When VS Code asks how to run it, pick **Python File**.
@@ -110,11 +113,11 @@ Once the bot is online, it will automatically register slash commands (instantly
 
 ## Weekly matches with `/admin-create-match`
 
-- **Setup**: populate `MATCH_CATEGORY_ID` with the category you want match channels to live in. Point `MATCH_RESULTS_CHANNEL_ID` at the channel where you want the final score summary to post. Add `CASTER_ROLE_ID`, `REF_ROLE_ID`, and `MOD_ROLE_ID` so staff can self-assign and get pinged.
-- **Create**: run `/admin-create-match` and pick two different teams. The bot will open a channel named `[team1]-vs-[team2]` inside the configured category and pre-permission it for both team roles.
+- **Setup**: populate `MATCH_CATEGORY_ID` with the category you want match channels to live in. Point `MATCH_RESULTS_CHANNEL_ID` at the channel where you want the final score summary to post. Add `CASTER_ROLE_ID`, `REF_ROLE_ID`, `MOD_ROLE_ID`, and (optionally) `MATCH_STAFF_ALERT_CHANNEL_ID` so staff get pinged in a central place when new match channels appear. Fill in `CHALLONGE_USERNAME` / `CHALLONGE_API_KEY` / `CHALLONGE_TOURNAMENT` if you want results pushed to your Challonge bracket.
+- **Create**: run `/admin-create-match` and pick two different teams. The bot will open a channel named `[team1]-vs-[team2]` inside the configured category, pre-permission it for both team roles, and ping staff in the alert channel if one is configured.
 - **Reminders**: every match is treated as running Monday → Monday. The bot sends a mid-week reminder automatically and, if no scores are submitted by the deadline, renames the channel with a warning emoji and pings mods.
 - **Staff joins**: casters, refs, and mods can press the buttons in the match channel to gain access (the bot will also try to assign the matching role if configured).
-- **Score reporting**: hit **Submit Score** in the match channel, enter the first-to-5 scoreline, and add up to five round notes (`R1` … `R5`). The bot locks the channel, posts the exact template you requested to the results channel, and logs the win in the transaction feed.
+- **Score reporting**: captains or co-captains run `/submit-scores` inside the match channel with the first-to-5 scoreline and optional round notes. Both teams must submit matching scores within three attempts; otherwise the bot pings mods. Successful submissions lock the channel, post the requested template to the results channel, and—when configured—update the Challonge bracket.
 - **Season flow**: the first six weeks are intended for seeding; after that, move the top 18 teams into a new Challonge bracket. Use `/admin-create-match` to generate fresh channels for each bracket pairing.
 
 ## Fast restart when you update your server
@@ -150,7 +153,7 @@ The bot now spins up a tiny web server alongside Discord.
 
 1. After the bot starts, open `http://<your-host>:<port>/ping` in a browser (or run `curl http://<your-host>:<port>/ping`). You should see the plain-text response `pong`. Every time that page is loaded, the hosting platform counts it as activity and keeps the container awake.
 2. Optional: visit `http://<your-host>:<port>/` to view a JSON health payload that includes the currently connected bot username. This is helpful when debugging deployments.
-3. To keep the bot online on free tiers that sleep, configure your uptime checker (UptimeRobot, FreshPing, cron-job.org, etc.) to send an HTTP GET request to the `/ping` URL every 5–10 minutes. The request does not need any headers or body—Render and similar providers only require that the endpoint is hit periodically.
+3. To keep the bot online on free tiers that sleep, configure your uptime checker (UptimeRobot, FreshPing, cron-job.org, etc.) to send an HTTP GET request to the `/ping` URL every 5–10 minutes. The request does not need any headers or body—most hosts just need the endpoint to be hit periodically.
 
 If you change the listening port via `WEB_PORT`, update the URL you monitor accordingly. The default binding is `0.0.0.0:8080`, which most hosts expose automatically.
 
@@ -174,6 +177,8 @@ If you change the listening port via `WEB_PORT`, update the URL you monitor acco
 | `/admin-manage` | Admins | Access the management dashboard for any team with invite access even during roster locks and a force-add button for immediate joins (still capped at five players). |
 | `/admin-lock` | Admins | Toggle roster locks to prevent new invites. |
 | `/admin-disband-all` | Admins | Triple-confirm wipe of every team, removing roles, clearing rosters, and deleting persisted data. |
+| `/admin-create-match <team_one> <team_two> [week]` | Admins | Creates a `[team1]-vs-[team2]` channel in your match category, pings staff in the configured alert channel, adds self-assign buttons for casters/refs/mods, and schedules reminders for the Monday→Monday window. |
+| `/submit-scores <your_team_score> <opponent_score> [r1…r5]` | Captains & co-captains | Run inside the match channel to post a first-to-5 result. Both teams must submit the same scoreline; mismatches give three total attempts then ping mods. Successful submissions lock the channel, post the template result, and (when configured) update the Challonge bracket. |
 
 > **Who counts as an admin?** Anyone with the Discord “Administrator” server permission _or_ any role ID listed (up to three) in `ADMIN_ROLE_IDS` inside your `.env` file can access the admin-only commands.
 
@@ -284,179 +289,3 @@ The bot persists its state in `data/teams.json`. You can back up or edit this fi
 ## Contributing
 
 Pull requests are welcome! Please format code with the default `black` settings and ensure new features include documentation updates in this README.
-
-## Free hosting on Render (beginner friendly)
-
-Render's free **Web Service** tier can run the bot continuously as long as the service receives an HTTP request at least once every 30 minutes. The built-in `/ping` endpoint was added specifically for this workflow. These steps assume your code lives on GitHub, but Render also supports GitLab and Bitbucket.
-
-1. **Prepare your repository**
-   - Push this project to a GitHub repository (either public or private). Render deploys directly from your git history.
-   - Double-check that `.env` is listed in `.gitignore` so you never push secrets.
-
-2. **Create a Render account**
-   - Sign up or log in at [render.com](https://render.com/). The free plan is enough for this bot.
-
-3. **Create a new Web Service**
-   - From the Render dashboard, click **New > Web Service**.
-   - Connect your GitHub account if prompted, then choose the repository containing the bot.
-   - For **Name**, pick something like `transaction-bot`.
-   - Set **Region** to the closest option to your Discord servers for lower latency.
-   - Choose the **Free** instance type.
-
-4. **Configure the build and start commands**
-   - In the **Build Command** box, enter:
-     ```bash
-     pip install -r requirements.txt
-     ```
-   - In the **Start Command** box, set:
-     ```bash
-     WEB_PORT=$PORT python -m bot.bot
-     ```
-     Render injects a dynamic `PORT` value at runtime; exporting `WEB_PORT=$PORT` before starting the bot makes the keep-alive site bind to the correct port.
-
-5. **Add environment variables**
-   - Scroll to the **Environment Variables** section and add the same keys you would place in your local `.env` file:
-     - `DISCORD_TOKEN`
-     - `GUILD_ID` (optional but recommended for faster slash-command sync)
-     - `CAPTAIN_ROLE_ID`, `CO_CAPTAIN_ROLE_ID`, `TEAM_MEMBER_ROLE_ID` (optional role IDs)
-     - `TRANSACTIONS_CHANNEL_ID` (optional)
-     - `ADMIN_ROLE_IDS` (optional comma-separated list)
-     - `WEB_HOST` set to `0.0.0.0` (ensures the aiohttp server listens on all interfaces)
-   - You do **not** need to add `WEB_PORT` manually because the start command already exports it.
-
-6. **Deploy**
-   - Click **Create Web Service**. Render installs dependencies, runs migrations (none in this project), and finally executes the start command.
-   - Wait for the logs to show `Started status site on http://0.0.0.0:<port>` followed by `Logged in as ...`. When that appears, the bot is online.
-
-7. **Keep the service awake**
-   - Render pauses free services after 15 minutes of inactivity. Use an external uptime pinger (for example, UptimeRobot or cron-job.org) to send an HTTP GET request to `https://<your-service-name>.onrender.com/ping` every 5–10 minutes. Each ping keeps the process active and simultaneously confirms the bot is still responsive.
-
-8. **Deploy updates**
-   - Push commits to your repository. Render automatically redeploys the latest commit on the selected branch.
-   - Watch the Render deploy logs to ensure the bot reconnects successfully after each update.
-
-If anything fails, open the Render service logs. They show the same startup messages you see locally, including configuration errors, missing environment variables, or Discord authentication problems.
-
-## Free hosting on Oracle Cloud (beginner friendly)
-
-You can run the bot 24/7 without paying by using Oracle Cloud Infrastructure's **Always Free** tier. The checklist below assumes you have never touched Oracle before and walks you through spinning up an Ubuntu server and keeping the bot online.
-
-1. **Create (or sign in to) an Oracle Cloud account**
-   - Go to [cloud.oracle.com/free](https://www.oracle.com/cloud/free/) and create an account.
-   - During sign-up Oracle asks for credit-card details for verification, but the Always Free resources will not charge you.
-   - After the account is activated, sign in to the [Oracle Cloud Console](https://cloud.oracle.com/). The first login can take a minute while the tenancy is provisioned.
-
-2. **Launch an Always Free compute instance**
-   - In the console search bar, type **"Compute Instances"** and open it.
-   - Click **Create instance**.
-   - Give it a name like `transaction-bot` and ensure the **Compartment** is your root compartment.
-   - Under **Image and shape**, pick **Canonical Ubuntu 22.04** (or any Ubuntu LTS) and click **Change shape**. Select an **Always Free eligible** shape, such as `VM.Standard.A1.Flex` with 1 OCPU and 1 GB of RAM.
-   - Leave networking on the default VCN/subnet. Make sure **Assign a public IPv4 address** stays checked so you can SSH in.
-   - In the **Add SSH keys** section, choose **Generate SSH key pair** and download both the private and public key files. Oracle shows their paths after creation; you'll use the `.key` file in the next step.
-   - Click **Create** and wait for the instance state to switch to *Running*.
-
-3. **Connect to the VM**
-   - Note the instance's public IP address from the instance details page.
-   - On Windows, install [Git for Windows](https://gitforwindows.org/) or [PuTTY](https://www.putty.org/) if you do not already have an SSH client.
-     - **Git Bash / macOS / Linux**: open a terminal and run `chmod 600 path/to/private.key`, then connect with:
-       ```bash
-       ssh -i path/to/private.key ubuntu@YOUR_PUBLIC_IP
-       ```
-     - **PuTTY**: convert the downloaded private key to PuTTY's `.ppk` format using *PuTTYgen*, then connect to `ubuntu@YOUR_PUBLIC_IP`.
-   - The default user for Ubuntu images is `ubuntu`. Accept the fingerprint prompt on the first connection.
-
-4. **Install system packages and Python**
-   - Update packages:
-     ```bash
-     sudo apt update && sudo apt upgrade -y
-     ```
-   - Install Git, Python, and virtualenv tools:
-     ```bash
-     sudo apt install -y git python3 python3-venv python3-pip
-     ```
-
-5. **Deploy the bot code**
-   - Clone the repository and enter it:
-     ```bash
-     git clone https://github.com/YOUR_USERNAME/Transaction-Bot.git
-     cd Transaction-Bot
-     ```
-     Replace the URL if you forked or host it elsewhere.
-   - Create and activate a virtual environment:
-     ```bash
-     python3 -m venv .venv
-     source .venv/bin/activate
-     ```
-   - Install requirements:
-     ```bash
-     pip install -r requirements.txt
-     ```
-   - Copy the environment template and edit it:
-     ```bash
-     cp .env.example .env
-     nano .env
-     ```
-     Paste your Discord token, guild ID, role IDs, and (optionally) the transactions channel ID. Press `Ctrl+O` then `Ctrl+X` to save in Nano.
-
-6. **Test the bot manually**
-   - Still inside the virtual environment, run:
-     ```bash
-     python -m bot.bot
-     ```
-   - Confirm the bot logs in and your slash commands appear. Stop it with `Ctrl+C` after verifying everything works.
-
-7. **Keep the bot running after you disconnect**
-   - The quickest approach is to use [`tmux`](https://github.com/tmux/tmux/wiki) or [`screen`](https://www.gnu.org/software/screen/). Install tmux and start a session:
-     ```bash
-     sudo apt install -y tmux
-     tmux new -s bot
-     ```
-   - Activate the virtual environment inside tmux and start the bot again:
-     ```bash
-     cd ~/Transaction-Bot
-     source .venv/bin/activate
-     python -m bot.bot
-     ```
-   - Detach from tmux with `Ctrl+B` then `D`. The bot keeps running even if you close the SSH window. Reattach later with `tmux attach -t bot`.
-
-   > **Want a more permanent setup?** Create a simple `systemd` service that launches the bot on boot. Oracle's docs cover enabling custom services, but tmux is perfectly fine for Always Free instances.
-
-8. **Secure your instance**
-   - Keep the system updated (`sudo apt update && sudo apt upgrade -y` weekly).
-   - Rotate your Discord token if it ever leaks—update `.env` and restart the bot.
-   - Store a backup of `data/teams.json` periodically (`scp ubuntu@YOUR_PUBLIC_IP:~/Transaction-Bot/data/teams.json ./backup.json`).
-
-Whenever you need to deploy updates, SSH back in, `cd` into the repo, pull the latest changes (`git pull`), reactivate `.venv`, and restart the bot inside your tmux session.
-
-## Hosting on your own server with a nested projects folder
-
-If you keep everything under a `projects` directory (for example, `~/projects/your-projects/Transaction-Bot`), here is a straight-through setup you can paste into your shell. Replace the URL if you use your own fork.
-
-```bash
-# 1) Move into your projects umbrella folder (create it if needed)
-mkdir -p ~/projects/your-projects
-cd ~/projects/your-projects
-
-# 2) Clone the bot and enter it
-git clone https://github.com/YOUR_USERNAME/Transaction-Bot.git
-cd Transaction-Bot
-
-# 3) Create and activate the virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# 4) Install dependencies
-pip install -r requirements.txt
-
-# 5) Configure environment variables
-cp .env.example .env
-nano .env   # paste your Discord token, guild ID, admin roles, etc.
-
-# 6) Launch the bot (from inside the repo)
-python -m bot.bot
-```
-
-Tips for this layout:
-
-- Any time you SSH back in, run `cd ~/projects/your-projects/Transaction-Bot && source .venv/bin/activate` before starting the bot so Python picks up the right environment.
-- If you use tmux or screen, start the session from inside `~/projects/your-projects/Transaction-Bot` so restarts are as simple as `python -m bot.bot`.

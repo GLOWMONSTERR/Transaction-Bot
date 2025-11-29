@@ -7,7 +7,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%S.%fZ"
 
@@ -26,6 +26,8 @@ class Match:
     status: str = "open"  # open | completed | overdue
     scores: Dict[str, int] = field(default_factory=dict)
     rounds: List[str] = field(default_factory=list)
+    submissions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+    mismatch_attempts: int = 0
 
     def to_dict(self) -> Dict:
         return {
@@ -39,6 +41,8 @@ class Match:
             "status": self.status,
             "scores": self.scores,
             "rounds": self.rounds,
+            "submissions": self.submissions,
+            "mismatch_attempts": self.mismatch_attempts,
         }
 
     @classmethod
@@ -54,6 +58,8 @@ class Match:
             status=data.get("status", "open"),
             scores={k: int(v) for k, v in data.get("scores", {}).items()},
             rounds=list(data.get("rounds", [])),
+            submissions=dict(data.get("submissions", {})),
+            mismatch_attempts=int(data.get("mismatch_attempts", 0)),
         )
 
     def due_datetime(self) -> datetime:
@@ -132,6 +138,8 @@ class MatchManager:
         match.status = "completed"
         match.scores = scores
         match.rounds = rounds
+        match.submissions = {}
+        match.mismatch_attempts = 0
         self._matches[match.id] = match
         self.save()
 

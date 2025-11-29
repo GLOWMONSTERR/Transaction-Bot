@@ -1038,7 +1038,6 @@ class MatchControlView(discord.ui.View):
     async def join_mod(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await self._grant_access(interaction, "mod", role_id=getattr(self.bot.config, "mod_role_id", None))
 
-    @discord.ui.button(label="Submit Score", style=discord.ButtonStyle.success)
+    @discord.ui.button(label="Use /submit-scores", style=discord.ButtonStyle.secondary, disabled=True)
     async def submit_score(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        modal = ScoreReportModal(match=self.match, on_submit_scores=self._handle_scores)
-        await interaction.response.send_modal(modal)
+        await _reply_ephemeral(interaction, "Use /submit-scores in this channel to report results.")

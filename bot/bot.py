@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
-from aiohttp import web
+from aiohttp import BasicAuth, ClientSession, web
 
 from .config import BotConfig
 from .match_manager import MatchManager
@@ -161,6 +161,27 @@ class LeagueCommands(commands.Cog):
         channel = guild.get_channel(self.bot.config.match_category_id)
         return channel if isinstance(channel, discord.CategoryChannel) else None
 
+    def _team_ping(self, guild: discord.Guild, team_name: str) -> str:
+        team = self.bot.team_manager.get_team(team_name)
+        if team:
+            role = guild.get_role(team.role_id)
+            if role:
+                return role.mention
+        return f"**{team_name}**"
+
+    async def _staff_alert_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
+        channel_id = self.bot.config.match_staff_alert_channel_id
+        if not channel_id:
+            return None
+        channel = guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            try:
+                fetched = await guild.fetch_channel(channel_id)
+            except (discord.Forbidden, discord.HTTPException):
+                return None
+            return fetched if isinstance(fetched, discord.TextChannel) else None
+        return channel
+
     def _require_admin(self, interaction: discord.Interaction) -> bool:
         member = interaction.user
         if isinstance(member, discord.Member):
@@ -207,6 +228,111 @@ class LeagueCommands(commands.Cog):
             await channel.send("\n".join(lines))
         except discord.HTTPException:
             return
+
+    async def _send_staff_alert(self, guild: discord.Guild, content: str) -> None:
+        channel = await self._staff_alert_channel(guild)
+        if not channel:
+            return
+        try:
+            await channel.send(content)
+        except discord.HTTPException:
+            log.warning("Failed to post staff alert")
+
+    async def _lock_match_channel(self, channel: discord.TextChannel, match: "Match") -> None:
+        try:
+            await channel.set_permissions(channel.guild.default_role, send_messages=False)
+            for team in (
+                self.bot.team_manager.get_team(match.team_one),
+                self.bot.team_manager.get_team(match.team_two),
+            ):
+                if team:
+                    role = channel.guild.get_role(team.role_id)
+                    if role:
+                        await channel.set_permissions(role, send_messages=False)
+        except discord.HTTPException:
+            log.warning("Unable to lock match channel %s", channel.id)
+
+    async def _report_challonge(self, match: "Match", scores: Dict[str, int]) -> Optional[str]:
+        username = self.bot.config.challonge_username
+        api_key = self.bot.config.challonge_api_key
+        tournament = self.bot.config.challonge_tournament
+        if not (username and api_key and tournament):
+            return None
+
+        async with ClientSession(auth=BasicAuth(username, api_key)) as session:
+            try:
+                async with session.get(
+                    f"https://api.challonge.com/v1/tournaments/{tournament}/participants.json"
+                ) as resp:
+                    if resp.status != 200:
+                        return f"Challonge participants request failed ({resp.status})."
+                    participants_payload = await resp.json()
+            except Exception as exc:  # pragma: no cover - network
+                return f"Challonge participants fetch failed: {exc}"
+
+            participant_ids: Dict[str, int] = {}
+            for entry in participants_payload:
+                participant = entry.get("participant", {})
+                name = str(participant.get("display_name") or participant.get("name") or "").lower()
+                if name:
+                    participant_ids[name] = int(participant.get("id"))
+
+            def _participant_id(team_name: str) -> Optional[int]:
+                return participant_ids.get(team_name.lower())
+
+            p1_id = _participant_id(match.team_one)
+            p2_id = _participant_id(match.team_two)
+            if not p1_id or not p2_id:
+                return "Teams are not registered in Challonge; skipping bracket update."
+
+            try:
+                async with session.get(
+                    f"https://api.challonge.com/v1/tournaments/{tournament}/matches.json"
+                ) as resp:
+                    if resp.status != 200:
+                        return f"Challonge matches request failed ({resp.status})."
+                    matches_payload = await resp.json()
+            except Exception as exc:  # pragma: no cover - network
+                return f"Challonge matches fetch failed: {exc}"
+
+            target_match_id: Optional[int] = None
+            match_player1: Optional[int] = None
+            match_player2: Optional[int] = None
+            for entry in matches_payload:
+                match_data = entry.get("match", {})
+                player1_id = match_data.get("player1_id")
+                player2_id = match_data.get("player2_id")
+                if {player1_id, player2_id} == {p1_id, p2_id} and match_data.get("state") != "complete":
+                    target_match_id = int(match_data.get("id"))
+                    match_player1 = int(player1_id)
+                    match_player2 = int(player2_id)
+                    break
+
+            if not target_match_id or not match_player1 or not match_player2:
+                return "Unable to locate the Challonge match for these teams."
+
+            p1_score = scores.get(match.team_one, 0) if match_player1 == p1_id else scores.get(match.team_two, 0)
+            p2_score = scores.get(match.team_two, 0) if match_player2 == p2_id else scores.get(match.team_one, 0)
+            winner_id = p1_id if scores.get(match.team_one, 0) > scores.get(match.team_two, 0) else p2_id
+
+            payload = {
+                "match": {
+                    "scores_csv": f"{p1_score}-{p2_score}",
+                    "winner_id": winner_id,
+                }
+            }
+
+            try:
+                async with session.put(
+                    f"https://api.challonge.com/v1/tournaments/{tournament}/matches/{target_match_id}.json",
+                    json=payload,
+                ) as resp:
+                    if resp.status != 200:
+                        return f"Challonge update failed ({resp.status})."
+            except Exception as exc:  # pragma: no cover - network
+                return f"Challonge update failed: {exc}"
+
+        return None
 
     # ------------------------------------------------------------------
     # Slash commands
@@ -572,11 +698,130 @@ class LeagueCommands(commands.Cog):
         await channel.send(
             content=(
                 f"Week {week_number} match created for **{team_one_obj.name}** vs **{team_two_obj.name}**.\n"
-                f"Matches run Monday to Monday. Due by <t:{due_ts}:F>. Mid-week reminders go out automatically.{staff_line}"
+                f"Matches run Monday to Monday. Due by <t:{due_ts}:F>. Mid-week reminders go out automatically.{staff_line}\n"
+                "Use `/submit-scores` in this channel when the match ends."
             ),
             view=view,
         )
+        if staff_pings:
+            await self._send_staff_alert(
+                guild,
+                f"New match channel {channel.mention} for **{team_one_obj.name}** vs **{team_two_obj.name}**."
+                f" Due by <t:{due_ts}:F>. {staff_line.strip()}",
+            )
         await self._send_ephemeral(interaction, f"Match channel created: {channel.mention}")
+
+    # ------------------------------------------------------------------
+    @app_commands.command(name="submit-scores", description="Submit match scores (captains or co-captains only)")
+    @app_commands.describe(
+        your_team_score="Your team's score (0-5)",
+        opponent_score="Opponent's score (0-5)",
+        r1="Round 1 note (optional)",
+        r2="Round 2 note (optional)",
+        r3="Round 3 note (optional)",
+        r4="Round 4 note (optional)",
+        r5="Round 5 note (optional)",
+    )
+    async def submit_scores(
+        self,
+        interaction: discord.Interaction,
+        your_team_score: app_commands.Range[int, 0, 5],
+        opponent_score: app_commands.Range[int, 0, 5],
+        r1: Optional[str] = None,
+        r2: Optional[str] = None,
+        r3: Optional[str] = None,
+        r4: Optional[str] = None,
+        r5: Optional[str] = None,
+    ) -> None:
+        guild = interaction.guild
+        channel = interaction.channel
+        if guild is None or not isinstance(channel, discord.TextChannel):
+            await self._send_ephemeral(interaction, "Run this inside a match channel.")
+            return
+
+        match = self.bot.match_manager.find_by_channel(channel.id)
+        if not match or match.status != "open":
+            await self._send_ephemeral(interaction, "This channel is not tied to an open match.")
+            return
+
+        team = self.bot.team_manager.find_team_for_member(interaction.user.id)
+        if not team or team.name not in {match.team_one, match.team_two}:
+            await self._send_ephemeral(interaction, "Only players on this match's teams can submit scores.")
+            return
+
+        is_captain = interaction.user.id == team.captain_id
+        is_co_captain = interaction.user.id in team.co_captains
+        if not (is_captain or is_co_captain):
+            await self._send_ephemeral(interaction, "Only captains and co-captains can submit scores.")
+            return
+
+        if max(your_team_score, opponent_score) != 5 or your_team_score == opponent_score:
+            await self._send_ephemeral(interaction, "First to 5 only: one side must reach 5 and scores cannot tie.")
+            return
+
+        rounds = [note.strip() for note in (r1, r2, r3, r4, r5) if note and note.strip()]
+
+        if team.name == match.team_one:
+            scores = {match.team_one: your_team_score, match.team_two: opponent_score}
+        else:
+            scores = {match.team_one: opponent_score, match.team_two: your_team_score}
+
+        match.submissions[team.name] = {"scores": scores, "rounds": rounds}
+        self.bot.match_manager._matches[match.id] = match
+        self.bot.match_manager.save()
+
+        if len(match.submissions) < 2:
+            await self._send_ephemeral(interaction, "Scores received. Waiting for the other team to submit.")
+            return
+
+        team_one_submission = match.submissions.get(match.team_one)
+        team_two_submission = match.submissions.get(match.team_two)
+        if not team_one_submission or not team_two_submission:
+            await self._send_ephemeral(interaction, "Scores received. Waiting for the other team to submit.")
+            return
+
+        if team_one_submission["scores"] != team_two_submission["scores"]:
+            match.mismatch_attempts += 1
+            attempts_left = max(0, 3 - match.mismatch_attempts)
+            match.submissions = {}
+            self.bot.match_manager._matches[match.id] = match
+            self.bot.match_manager.save()
+
+            mod_ping = ""
+            if match.mismatch_attempts >= 3 and self.bot.config.mod_role_id:
+                role = guild.get_role(self.bot.config.mod_role_id)
+                if role:
+                    mod_ping = f" {role.mention}"
+
+            team_one_ping = self._team_ping(guild, match.team_one)
+            team_two_ping = self._team_ping(guild, match.team_two)
+            await channel.send(
+                f"Score submissions don't match. {team_one_ping} {team_two_ping}: {attempts_left} attempt(s) remaining before mods are pinged.{mod_ping}"
+            )
+            await self._send_ephemeral(interaction, "Scores didn't match; everyone has been pinged to resubmit.")
+            return
+
+        final_scores = team_one_submission["scores"]
+        final_rounds = team_one_submission.get("rounds") or team_two_submission.get("rounds") or []
+
+        self.bot.match_manager.mark_completed(match, scores=final_scores, rounds=final_rounds)
+
+        await self._lock_match_channel(channel, match)
+
+        winner = match.team_one if final_scores[match.team_one] > final_scores[match.team_two] else match.team_two
+        loser = match.team_two if winner == match.team_one else match.team_one
+
+        await self._post_results(guild, winner=winner, loser=loser, rounds=final_rounds)
+        await channel.send(
+            f"Scores confirmed: **{match.team_one} {final_scores[match.team_one]} - {final_scores[match.team_two]} {match.team_two}**"
+        )
+        await self.bot.log_event(guild, f"{winner} defeated {loser} (scores submitted via /submit-scores).")
+
+        challonge_note = await self._report_challonge(match, final_scores)
+        response = "Scores submitted, channel locked, and results posted."
+        if challonge_note:
+            response = "\n".join([response, challonge_note])
+        await self._send_ephemeral(interaction, response)
 
     # ------------------------------------------------------------------
     @app_commands.command(name="admin-manage", description="Admin: manage any team")

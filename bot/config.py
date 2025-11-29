@@ -53,10 +53,14 @@ class BotConfig:
     transactions_channel_id: Optional[int]
     match_category_id: Optional[int]
     match_results_channel_id: Optional[int]
+    match_staff_alert_channel_id: Optional[int]
     caster_role_id: Optional[int]
     ref_role_id: Optional[int]
     mod_role_id: Optional[int]
     admin_role_ids: Tuple[int, ...]
+    challonge_username: Optional[str]
+    challonge_api_key: Optional[str]
+    challonge_tournament: Optional[str]
     web_host: Optional[str]
     web_port: Optional[int]
 
@@ -75,10 +79,14 @@ class BotConfig:
             transactions_channel_id=_get_int("TRANSACTIONS_CHANNEL_ID"),
             match_category_id=_get_int("MATCH_CATEGORY_ID"),
             match_results_channel_id=_get_int("MATCH_RESULTS_CHANNEL_ID"),
+            match_staff_alert_channel_id=_get_int("MATCH_STAFF_ALERT_CHANNEL_ID"),
             caster_role_id=_get_int("CASTER_ROLE_ID"),
             ref_role_id=_get_int("REF_ROLE_ID"),
             mod_role_id=_get_int("MOD_ROLE_ID"),
             admin_role_ids=_get_int_list("ADMIN_ROLE_IDS"),
+            challonge_username=os.getenv("CHALLONGE_USERNAME"),
+            challonge_api_key=os.getenv("CHALLONGE_API_KEY"),
+            challonge_tournament=os.getenv("CHALLONGE_TOURNAMENT"),
             web_host=os.getenv("WEB_HOST"),
             web_port=_get_int("WEB_PORT"),
         )
