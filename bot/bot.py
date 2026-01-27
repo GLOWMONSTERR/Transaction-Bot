@@ -18,6 +18,7 @@ from .team_manager import Team, TeamManager
 from .views import (
     ConfirmView,
     ManageTeamView,
+    AssignmentClaimView,
     RosterLookupView,
     _safe_delete_role,
     _safe_remove_role,
@@ -182,6 +183,19 @@ class LeagueCommands(commands.Cog):
             return fetched if isinstance(fetched, discord.TextChannel) else None
         return channel
 
+    async def _assignments_channel(self, guild: discord.Guild) -> Optional[discord.TextChannel]:
+        channel_id = self.bot.config.match_assignments_channel_id
+        if not channel_id:
+            return None
+        channel = guild.get_channel(channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            try:
+                fetched = await guild.fetch_channel(channel_id)
+            except (discord.Forbidden, discord.HTTPException):
+                return None
+            return fetched if isinstance(fetched, discord.TextChannel) else None
+        return channel
+
     def _require_admin(self, interaction: discord.Interaction) -> bool:
         member = interaction.user
         if isinstance(member, discord.Member):
@@ -237,38 +251,6 @@ class LeagueCommands(commands.Cog):
             await channel.send(content)
         except discord.HTTPException:
             log.warning("Failed to post staff alert")
-
-    async def _post_assignment_request(
-        self,
-        guild: discord.Guild,
-        *,
-        match: "Match",
-        match_channel: discord.TextChannel,
-        scheduled_time: str,
-    ) -> None:
-        channel = await self._staff_alert_channel(guild)
-        if not channel:
-            await match_channel.send(
-                "Assignments channel is not configured. Set MATCH_STAFF_ALERT_CHANNEL_ID so casters/refs can claim matches."
-            )
-            return
-
-        from .views import AssignmentSignupView
-
-        view = AssignmentSignupView(
-            match=match,
-            manager=self.bot.match_manager,
-            bot=self.bot,
-            match_channel_id=match_channel.id,
-        )
-        content = (
-            f"Match scheduled: **{match.team_one}** vs **{match.team_two}** at {scheduled_time}.\n"
-            f"Match channel: {match_channel.mention}. Click below to claim the cast/ref/mod slot."
-        )
-        try:
-            await channel.send(content, view=view)
-        except discord.HTTPException:
-            log.warning("Failed to post assignment request to staff channel")
 
     async def _lock_match_channel(self, channel: discord.TextChannel, match: "Match") -> None:
         try:
@@ -567,15 +549,14 @@ class LeagueCommands(commands.Cog):
                 choices.append(app_commands.Choice(name=team.name, value=team.name))
         return choices[:25]
 
-    def _week_window(self, now: Optional[datetime] = None) -> tuple[datetime, datetime, datetime, int]:
-        """Return (start_of_week, due_at, reminder_at, week_number)."""
+    def _week_window(self, now: Optional[datetime] = None) -> tuple[datetime, datetime, int]:
+        """Return (start_at, due_at, week_number) using a 7-day window from now."""
 
         now = now or datetime.utcnow()
-        start = datetime.combine((now - timedelta(days=now.weekday())).date(), datetime.min.time())
+        start = now
         due = start + timedelta(days=7)
-        reminder = start + timedelta(days=3, hours=12)
         week_number = int(((start - datetime(start.year, 1, 1)).days // 7) + 1)
-        return start, due, reminder, week_number
+        return start, due, week_number
 
     @app_commands.command(name="admin-edit", description="Admin: edit a team's settings")
     @app_commands.describe(
@@ -680,7 +661,7 @@ class LeagueCommands(commands.Cog):
             await self._send_ephemeral(interaction, "Both teams must exist before scheduling a match.")
             return
 
-        _, due_at, _, default_week = self._week_window()
+        _, due_at, default_week = self._week_window()
         week_number = week or default_week
 
         channel_name = f"{team_one_obj.name.lower().replace(' ', '-')}-vs-{team_two_obj.name.lower().replace(' ', '-')}"
@@ -709,43 +690,27 @@ class LeagueCommands(commands.Cog):
             week=week_number,
         )
 
-        from .views import MatchControlView  # local import to avoid cycles
-
-        view = MatchControlView(
-            match=match,
-            manager=self.bot.match_manager,
-            team_manager=self.bot.team_manager,
-            bot=self.bot,
-            post_results=self._post_results,
-        )
-
         due_ts = int(due_at.timestamp())
+        team_one_ping = self._team_ping(guild, team_one_obj.name)
+        team_two_ping = self._team_ping(guild, team_two_obj.name)
 
         await channel.send(
             content=(
-                f"Week {week_number} match created for **{team_one_obj.name}** vs **{team_two_obj.name}**.\n"
-                f"Matches run Monday to Monday. Due by <t:{due_ts}:F>. Mid-week reminders go out automatically.\n"
-                "Both captains: run `/confirm-match-time` in this channel to lock a start time. That post triggers the assignments queue for casters/refs.\n"
-                "Use `/submit-scores` in this channel when the match ends."
+                f"Week {week_number} match created for {team_one_ping} vs {team_two_ping}.\n"
+                f"Matches are due within 7 days. Submit scores by <t:{due_ts}:F>.\n"
+                "Use `/submit-scores` in this channel when the match ends. Use `/submit-time` to propose and confirm the match time."
             ),
-            view=view,
         )
         await self._send_ephemeral(interaction, f"Match channel created: {channel.mention}")
 
     # ------------------------------------------------------------------
-    @app_commands.command(name="confirm-match-time", description="Captains: confirm your match start time")
-    @app_commands.describe(
-        match_time="e.g. Monday 8pm EST",
-    )
-    async def confirm_match_time(
-        self,
-        interaction: discord.Interaction,
-        match_time: str,
-    ) -> None:
+    @app_commands.command(name="submit-time", description="Submit your scheduled match time for staff assignments")
+    @app_commands.describe(scheduled_for="When the match will start (include timezone)")
+    async def submit_time(self, interaction: discord.Interaction, scheduled_for: str) -> None:
         guild = interaction.guild
         channel = interaction.channel
         if guild is None or not isinstance(channel, discord.TextChannel):
-            await self._send_ephemeral(interaction, "Run this inside a match channel.")
+            await self._send_ephemeral(interaction, "Run this inside your match channel.")
             return
 
         match = self.bot.match_manager.find_by_channel(channel.id)
@@ -755,54 +720,108 @@ class LeagueCommands(commands.Cog):
 
         team = self.bot.team_manager.find_team_for_member(interaction.user.id)
         if not team or team.name not in {match.team_one, match.team_two}:
-            await self._send_ephemeral(interaction, "Only captains/co-captains on these teams can confirm.")
-            return
-
-        if match.scheduled_time:
-            await self._send_ephemeral(
-                interaction,
-                f"Match time already locked as `{match.scheduled_time}`.",
-            )
+            await self._send_ephemeral(interaction, "Only players on this match's teams can submit the time.")
             return
 
         is_captain = interaction.user.id == team.captain_id
         is_co_captain = interaction.user.id in team.co_captains
         if not (is_captain or is_co_captain):
-            await self._send_ephemeral(interaction, "Only captains and co-captains can confirm the time.")
+            await self._send_ephemeral(interaction, "Only captains and co-captains can submit the time.")
             return
 
-        match.time_confirmations[team.name] = match_time.strip()
-        self.bot.match_manager._matches[match.id] = match
-        self.bot.match_manager.save()
-
-        other_team = match.team_two if team.name == match.team_one else match.team_one
-        other_time = match.time_confirmations.get(other_team)
-
-        if not other_time:
-            await self._send_ephemeral(interaction, "Saved your time. Waiting for the other captain to confirm.")
+        cleaned_time = scheduled_for.strip()
+        if not cleaned_time:
+            await self._send_ephemeral(interaction, "Please include the scheduled time (and timezone).")
             return
 
-        if other_time.strip().lower() != match_time.strip().lower():
-            await channel.send(
-                f"Times don't match yet. {team.name} submitted `{match_time}`, {other_team} submitted `{other_time}`. Both captains should resubmit the same time to lock it."
+        # If a time is already pending confirmation, prompt the confirmer instead of overwriting.
+        if match.scheduled_time and not match.scheduled_confirmed:
+            from .views import ConfirmTimeView  # local import to avoid cycles
+
+            async def _confirm(inter: discord.Interaction) -> None:
+                assignments_channel = await self._assignments_channel(guild)
+                if not assignments_channel:
+                    await self._send_ephemeral(
+                        inter,
+                        "Set MATCH_ASSIGNMENTS_CHANNEL_ID to a text channel where staff can claim matches.",
+                    )
+                    return
+
+                self.bot.match_manager.set_scheduled_time(
+                    match,
+                    scheduled_time=match.scheduled_time,
+                    confirmed=True,
+                )
+
+                team_one_ping = self._team_ping(guild, match.team_one)
+                team_two_ping = self._team_ping(guild, match.team_two)
+
+                staff_pings: List[str] = []
+                for role_id in (
+                    self.bot.config.caster_role_id,
+                    self.bot.config.ref_role_id,
+                    self.bot.config.mod_role_id,
+                ):
+                    if not role_id:
+                        continue
+                    role = guild.get_role(role_id)
+                    if role:
+                        staff_pings.append(role.mention)
+                staff_line = f"{' '.join(staff_pings)} " if staff_pings else ""
+
+                view = AssignmentClaimView(bot=self.bot, match_channel_id=channel.id)
+                content = (
+                    f"{staff_line}Match time confirmed for {team_one_ping} vs {team_two_ping}.\n"
+                    f"Match channel: {channel.mention}\n"
+                    f"Scheduled time: {match.scheduled_time}"
+                )
+                try:
+                    await assignments_channel.send(content, view=view)
+                except discord.HTTPException:
+                    await self._send_ephemeral(inter, "Couldn't post to the assignments channel.")
+                    return
+
+                if staff_pings:
+                    await self._send_staff_alert(
+                        guild,
+                        f"{team_one_ping} vs {team_two_ping} confirmed a match time: {match.scheduled_time}. {staff_line.strip()}",
+                    )
+
+                await channel.send(
+                    f"Match time confirmed: {match.scheduled_time}. Staff can claim the match in the assignments channel."
+                )
+                await self._send_ephemeral(inter, "Time confirmed and posted for staff claims.")
+
+            async def _change(inter: discord.Interaction) -> None:
+                self.bot.match_manager.set_scheduled_time(match, scheduled_time=None, confirmed=False)
+                await self._send_ephemeral(inter, "Time cleared. Run /submit-time again with the new proposal.")
+
+            view = ConfirmTimeView(
+                scheduled_time=match.scheduled_time or cleaned_time,
+                on_confirm=_confirm,
+                on_change=_change,
             )
-            await self._send_ephemeral(interaction, "Time noted. Waiting for both sides to align.")
+            await self._send_ephemeral(
+                interaction,
+                f"Current match time: {match.scheduled_time}. Confirm or choose change.",
+                view=view,
+            )
             return
 
-        match.scheduled_time = match_time.strip()
-        self.bot.match_manager._matches[match.id] = match
-        self.bot.match_manager.save()
+        # No pending proposal: save and ask the opposing captain to confirm.
+        self.bot.match_manager.set_scheduled_time(match, scheduled_time=cleaned_time, confirmed=False)
+        team_one_ping = self._team_ping(guild, match.team_one)
+        team_two_ping = self._team_ping(guild, match.team_two)
 
         await channel.send(
-            f"Match time locked: **{match.team_one} vs {match.team_two}** at `{match.scheduled_time}`. Posting to assignments."
+            f"Proposed match time from {interaction.user.mention}: {cleaned_time}.\n"
+            f"{team_one_ping} {team_two_ping} — have the opposing captain run `/submit-time` here to confirm or change."
         )
-        await self._post_assignment_request(
-            guild,
-            match=match,
-            match_channel=channel,
-            scheduled_time=match.scheduled_time,
+
+        await self._send_ephemeral(
+            interaction,
+            "Time saved. Ask the other captain/co-cap to run `/submit-time` in this channel to confirm it.",
         )
-        await self._send_ephemeral(interaction, "Confirmed and sent to assignments.")
 
     # ------------------------------------------------------------------
     @app_commands.command(name="submit-scores", description="Submit match scores (captains or co-captains only)")
@@ -912,6 +931,71 @@ class LeagueCommands(commands.Cog):
 
         challonge_note = await self._report_challonge(match, final_scores)
         response = "Scores submitted, channel locked, and results posted."
+        if challonge_note:
+            response = "\n".join([response, challonge_note])
+        await self._send_ephemeral(interaction, response)
+
+    # ------------------------------------------------------------------
+    @app_commands.command(
+        name="admin-submit-scores", description="Admin override: set match score for the current channel"
+    )
+    @app_commands.describe(
+        team_one_score="Score for the first team in this match (0-5)",
+        team_two_score="Score for the second team in this match (0-5)",
+        r1="Round 1 note (optional)",
+        r2="Round 2 note (optional)",
+        r3="Round 3 note (optional)",
+        r4="Round 4 note (optional)",
+        r5="Round 5 note (optional)",
+    )
+    async def admin_submit_scores(
+        self,
+        interaction: discord.Interaction,
+        team_one_score: app_commands.Range[int, 0, 5],
+        team_two_score: app_commands.Range[int, 0, 5],
+        r1: Optional[str] = None,
+        r2: Optional[str] = None,
+        r3: Optional[str] = None,
+        r4: Optional[str] = None,
+        r5: Optional[str] = None,
+    ) -> None:
+        if not self._require_admin(interaction):
+            await self._send_ephemeral(interaction, "Administrator permissions are required.")
+            return
+
+        guild = interaction.guild
+        channel = interaction.channel
+        if guild is None or not isinstance(channel, discord.TextChannel):
+            await self._send_ephemeral(interaction, "Run this inside a match channel.")
+            return
+
+        match = self.bot.match_manager.find_by_channel(channel.id)
+        if not match or match.status != "open":
+            await self._send_ephemeral(interaction, "This channel is not tied to an open match.")
+            return
+
+        if max(team_one_score, team_two_score) != 5 or team_one_score == team_two_score:
+            await self._send_ephemeral(interaction, "First to 5 only: one side must reach 5 and scores cannot tie.")
+            return
+
+        rounds = [note.strip() for note in (r1, r2, r3, r4, r5) if note and note.strip()]
+
+        final_scores = {match.team_one: team_one_score, match.team_two: team_two_score}
+        self.bot.match_manager.mark_completed(match, scores=final_scores, rounds=rounds)
+
+        await self._lock_match_channel(channel, match)
+
+        winner = match.team_one if team_one_score > team_two_score else match.team_two
+        loser = match.team_two if winner == match.team_one else match.team_one
+
+        await self._post_results(guild, winner=winner, loser=loser, rounds=rounds)
+        await channel.send(
+            f"Admin set scores: **{match.team_one} {team_one_score} - {team_two_score} {match.team_two}**"
+        )
+        await self.bot.log_event(guild, f"{winner} defeated {loser} (admin-submitted scores).")
+
+        challonge_note = await self._report_challonge(match, final_scores)
+        response = "Scores submitted, channel locked, and results posted by an admin."
         if challonge_note:
             response = "\n".join([response, challonge_note])
         await self._send_ephemeral(interaction, response)
@@ -1077,12 +1161,13 @@ class LeagueCommands(commands.Cog):
     # ------------------------------------------------------------------
     @tasks.loop(minutes=30)
     async def _reminder_loop(self) -> None:
+        """Check for overdue matches and mark channels accordingly."""
+
         await self.bot.wait_until_ready()
         now = datetime.utcnow()
 
         for match in self.bot.match_manager.open_matches():
             due_at = match.due_datetime()
-            reminder_at = due_at - timedelta(days=3, hours=12)
 
             channel = self.bot.get_channel(match.channel_id)
             if not isinstance(channel, discord.TextChannel):
@@ -1093,12 +1178,6 @@ class LeagueCommands(commands.Cog):
             team_two = self.bot.team_manager.get_team(match.team_two)
             team_one_ping = guild.get_role(team_one.role_id).mention if team_one and guild.get_role(team_one.role_id) else match.team_one
             team_two_ping = guild.get_role(team_two.role_id).mention if team_two and guild.get_role(team_two.role_id) else match.team_two
-
-            if not match.reminder_sent and now >= reminder_at and now < due_at:
-                await channel.send(
-                    f"Mid-week reminder: {team_one_ping} vs {team_two_ping} is due by <t:{int(due_at.timestamp())}:F>."
-                )
-                self.bot.match_manager.mark_reminded(match)
 
             if now >= due_at:
                 self.bot.match_manager.mark_overdue(match)
