@@ -28,8 +28,8 @@ class Match:
     rounds: List[str] = field(default_factory=list)
     submissions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     mismatch_attempts: int = 0
-    time_confirmations: Dict[str, str] = field(default_factory=dict)
     scheduled_time: Optional[str] = None
+    scheduled_confirmed: bool = False
 
     def to_dict(self) -> Dict:
         return {
@@ -45,8 +45,8 @@ class Match:
             "rounds": self.rounds,
             "submissions": self.submissions,
             "mismatch_attempts": self.mismatch_attempts,
-            "time_confirmations": self.time_confirmations,
             "scheduled_time": self.scheduled_time,
+            "scheduled_confirmed": self.scheduled_confirmed,
         }
 
     @classmethod
@@ -64,8 +64,8 @@ class Match:
             rounds=list(data.get("rounds", [])),
             submissions=dict(data.get("submissions", {})),
             mismatch_attempts=int(data.get("mismatch_attempts", 0)),
-            time_confirmations=dict(data.get("time_confirmations", {})),
             scheduled_time=data.get("scheduled_time"),
+            scheduled_confirmed=bool(data.get("scheduled_confirmed", False)),
         )
 
     def due_datetime(self) -> datetime:
@@ -151,5 +151,11 @@ class MatchManager:
 
     def mark_overdue(self, match: Match) -> None:
         match.status = "overdue"
+        self._matches[match.id] = match
+        self.save()
+
+    def set_scheduled_time(self, match: Match, *, scheduled_time: Optional[str], confirmed: bool = False) -> None:
+        match.scheduled_time = scheduled_time
+        match.scheduled_confirmed = confirmed
         self._matches[match.id] = match
         self.save()
