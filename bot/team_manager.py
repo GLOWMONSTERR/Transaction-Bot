@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 
-MAX_ROSTER_SIZE = 5
+MAX_ROSTER_SIZE = 9
 
 
 @dataclass
