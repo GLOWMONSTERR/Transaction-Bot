@@ -173,6 +173,143 @@ class InviteUserSelect(discord.ui.UserSelect):
         await self._on_select(interaction, member)
 
 
+class _AssignmentButton(discord.ui.Button):
+    """Button that grants a staffer access to a match channel."""
+
+    def __init__(
+        self,
+        *,
+        label: str,
+        style: discord.ButtonStyle,
+        role_id: Optional[int],
+        channel_id: int,
+    ) -> None:
+        super().__init__(label=label, style=style)
+        self.role_id = role_id
+        self.channel_id = channel_id
+
+    async def callback(self, interaction: discord.Interaction) -> None:  # type: ignore[override]
+        guild = interaction.guild
+        if guild is None:
+            await _reply_ephemeral(interaction, "Use this inside the assignments channel.")
+            return
+
+        channel = guild.get_channel(self.channel_id)
+        if not isinstance(channel, discord.TextChannel):
+            try:
+                channel = await guild.fetch_channel(self.channel_id)
+            except (discord.Forbidden, discord.HTTPException):
+                channel = None
+        if not isinstance(channel, discord.TextChannel):
+            await _reply_ephemeral(interaction, "I can't find the match channel anymore.")
+            return
+
+        member = interaction.user
+        if not isinstance(member, discord.Member):
+            await _reply_ephemeral(interaction, "Join the server to claim this match.")
+            return
+
+        required_role = guild.get_role(self.role_id) if self.role_id else None
+        if self.role_id and not required_role:
+            await _reply_ephemeral(interaction, "Ask an admin to set the staff role IDs before claiming matches.")
+            return
+        if required_role and required_role not in member.roles:
+            await _reply_ephemeral(
+                interaction,
+                f"You need the {required_role.mention} role to claim this assignment.",
+            )
+            return
+
+        try:
+            await channel.set_permissions(member, view_channel=True, send_messages=True)
+        except discord.HTTPException:
+            await _reply_ephemeral(interaction, "I couldn't update the channel permissions.")
+            return
+
+        self.disabled = True
+        if interaction.message:
+            try:
+                await interaction.message.edit(view=self.view)
+            except discord.HTTPException:
+                pass
+
+        await _reply_ephemeral(interaction, f"You're set for {channel.mention} as {self.label}.")
+        try:
+            await channel.send(f"{member.mention} accepted this match as {self.label}.")
+        except discord.HTTPException:
+            pass
+
+
+class AssignmentClaimView(discord.ui.View):
+    """Assignment buttons posted in the staff assignments channel."""
+
+    def __init__(
+        self,
+        *,
+        bot: "LeagueBot",
+        match_channel_id: int,
+    ) -> None:
+        super().__init__(timeout=7 * 24 * 60 * 60)
+        self.bot = bot
+        self.match_channel_id = match_channel_id
+
+        buttons = [
+            ("Accept as Caster", discord.ButtonStyle.primary, bot.config.caster_role_id),
+            ("Accept as Ref", discord.ButtonStyle.primary, bot.config.ref_role_id),
+            ("Accept as Mod", discord.ButtonStyle.secondary, bot.config.mod_role_id),
+        ]
+
+        for label, style, role_id in buttons:
+            self.add_item(
+                _AssignmentButton(
+                    label=label,
+                    style=style,
+                    role_id=role_id,
+                    channel_id=match_channel_id,
+                )
+            )
+
+
+class ConfirmTimeView(discord.ui.View):
+    """Lets captains confirm or reset a proposed match time."""
+
+    def __init__(
+        self,
+        *,
+        scheduled_time: str,
+        on_confirm: Callable[[discord.Interaction], Awaitable[None]],
+        on_change: Callable[[discord.Interaction], Awaitable[None]],
+    ) -> None:
+        super().__init__(timeout=7 * 24 * 60 * 60)
+        self.scheduled_time = scheduled_time
+        self._on_confirm = on_confirm
+        self._on_change = on_change
+
+    def _disable(self) -> None:
+        for child in self.children:
+            child.disabled = True
+
+    @discord.ui.button(label="Confirm time", style=discord.ButtonStyle.success)
+    async def confirm(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._on_confirm(interaction)
+        self._disable()
+        if interaction.message:
+            try:
+                await interaction.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+    @discord.ui.button(label="Change time", style=discord.ButtonStyle.secondary)
+    async def change(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._on_change(interaction)
+        self._disable()
+        if interaction.message:
+            try:
+                await interaction.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
 class InviteDecisionView(discord.ui.View):
     """DM view that lets a player accept or decline a roster invite."""
 
@@ -945,6 +1082,43 @@ class MatchControlView(discord.ui.View):
         self.bot = bot
         self.post_results = post_results
 
+    # ------------------------------------------------------------------
+    async def _grant_access(
+        self,
+        interaction: discord.Interaction,
+        label: str,
+        *,
+        role_id: Optional[int],
+    ) -> None:
+        channel = interaction.channel
+        if not isinstance(channel, discord.TextChannel):
+            await _reply_ephemeral(interaction, "This can only be used inside a match channel.")
+            return
+
+        try:
+            await channel.set_permissions(
+                interaction.user,
+                view_channel=True,
+                send_messages=True,
+            )
+        except discord.HTTPException:
+            await _reply_ephemeral(interaction, "I couldn't update channel permissions.")
+            return
+
+        note = ""
+        if role_id:
+            role = channel.guild.get_role(role_id)
+            if role and isinstance(interaction.user, discord.Member) and role not in interaction.user.roles:
+                try:
+                    await interaction.user.add_roles(role, reason=f"Joined match as {label}")
+                except discord.Forbidden:
+                    note = " (couldn't add role; check my permissions)"
+                except discord.HTTPException:
+                    note = " (role add failed)"
+
+        await _reply_ephemeral(interaction, f"Added you to this match channel as {label}.{note}")
+        await channel.send(f"{interaction.user.mention} is covering this match as {label}.")
+
     async def _handle_scores(
         self,
         interaction: discord.Interaction,
@@ -989,105 +1163,18 @@ class MatchControlView(discord.ui.View):
         await self.bot.log_event(channel.guild, f"{winner} defeated {loser} (scores submitted).")
 
     # ------------------------------------------------------------------
+    @discord.ui.button(label="Join as Caster", style=discord.ButtonStyle.primary)
+    async def join_caster(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._grant_access(interaction, "caster", role_id=getattr(self.bot.config, "caster_role_id", None))
+
+    @discord.ui.button(label="Join as Ref", style=discord.ButtonStyle.primary)
+    async def join_ref(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._grant_access(interaction, "ref", role_id=getattr(self.bot.config, "ref_role_id", None))
+
+    @discord.ui.button(label="Join as Mod", style=discord.ButtonStyle.secondary)
+    async def join_mod(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
+        await self._grant_access(interaction, "mod", role_id=getattr(self.bot.config, "mod_role_id", None))
+
     @discord.ui.button(label="Use /submit-scores", style=discord.ButtonStyle.secondary, disabled=True)
     async def submit_score(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
         await _reply_ephemeral(interaction, "Use /submit-scores in this channel to report results.")
-
-
-class AssignmentSignupView(discord.ui.View):
-    """Lets staff claim a match from the assignments channel."""
-
-    def __init__(
-        self,
-        *,
-        match: Match,
-        manager: MatchManager,
-        bot: "LeagueBot",
-        match_channel_id: int,
-    ) -> None:
-        super().__init__(timeout=7 * 24 * 60 * 60)
-        self.match_id = match.id
-        self.match_channel_id = match_channel_id
-        self.manager = manager
-        self.bot = bot
-
-    async def _claim(
-        self,
-        interaction: discord.Interaction,
-        label: str,
-        *,
-        role_id: Optional[int],
-        announce: bool,
-    ) -> None:
-        guild = interaction.guild
-        if guild is None:
-            await _reply_ephemeral(interaction, "Use this inside the assignments channel.")
-            return
-
-        channel = guild.get_channel(self.match_channel_id)
-        if not isinstance(channel, discord.TextChannel):
-            try:
-                fetched = await guild.fetch_channel(self.match_channel_id)
-            except (discord.Forbidden, discord.HTTPException):
-                await _reply_ephemeral(interaction, "Match channel is missing.")
-                return
-            if not isinstance(fetched, discord.TextChannel):
-                await _reply_ephemeral(interaction, "Match channel is missing.")
-                return
-            channel = fetched
-
-        try:
-            await channel.set_permissions(
-                interaction.user,
-                view_channel=True,
-                send_messages=True,
-            )
-        except discord.HTTPException:
-            await _reply_ephemeral(interaction, "I couldn't update match channel permissions.")
-            return
-
-        note = ""
-        if role_id and isinstance(interaction.user, discord.Member):
-            role = guild.get_role(role_id)
-            if role and role not in interaction.user.roles:
-                try:
-                    await interaction.user.add_roles(role, reason=f"Assigned as {label}")
-                except discord.Forbidden:
-                    note = " (role add blocked; check my permissions)"
-                except discord.HTTPException:
-                    note = " (role add failed)"
-
-        if announce:
-            try:
-                await channel.send(f"{interaction.user.mention} has been assigned to {label} this match.")
-            except discord.HTTPException:
-                note = f"{note} (couldn't post assignment in match channel)"
-
-        await _reply_ephemeral(interaction, f"Added you to {channel.mention} as {label}.{note}")
-
-    @discord.ui.button(label="Claim as Caster", style=discord.ButtonStyle.primary)
-    async def claim_caster(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self._claim(
-            interaction,
-            "cast",
-            role_id=getattr(self.bot.config, "caster_role_id", None),
-            announce=True,
-        )
-
-    @discord.ui.button(label="Claim as Ref", style=discord.ButtonStyle.primary)
-    async def claim_ref(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self._claim(
-            interaction,
-            "referee",
-            role_id=getattr(self.bot.config, "ref_role_id", None),
-            announce=True,
-        )
-
-    @discord.ui.button(label="Claim as Mod", style=discord.ButtonStyle.secondary)
-    async def claim_mod(self, interaction: discord.Interaction, _: discord.ui.Button) -> None:
-        await self._claim(
-            interaction,
-            "moderate",
-            role_id=getattr(self.bot.config, "mod_role_id", None),
-            announce=False,
-        )
