@@ -53,6 +53,7 @@ class BotConfig:
     transactions_channel_id: Optional[int]
     match_category_id: Optional[int]
     match_results_channel_id: Optional[int]
+    match_assignments_channel_id: Optional[int]
     match_staff_alert_channel_id: Optional[int]
     caster_role_id: Optional[int]
     ref_role_id: Optional[int]
@@ -79,6 +80,7 @@ class BotConfig:
             transactions_channel_id=_get_int("TRANSACTIONS_CHANNEL_ID"),
             match_category_id=_get_int("MATCH_CATEGORY_ID"),
             match_results_channel_id=_get_int("MATCH_RESULTS_CHANNEL_ID"),
+            match_assignments_channel_id=_get_int("MATCH_ASSIGNMENTS_CHANNEL_ID"),
             match_staff_alert_channel_id=_get_int("MATCH_STAFF_ALERT_CHANNEL_ID"),
             caster_role_id=_get_int("CASTER_ROLE_ID"),
             ref_role_id=_get_int("REF_ROLE_ID"),
